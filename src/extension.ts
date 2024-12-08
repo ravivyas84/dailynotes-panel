@@ -31,7 +31,7 @@ class DailyNotesProvider implements vscode.TreeDataProvider<DailyNote> {
         treeItem.command = {
             command: 'dailyNotes.openNote',
             title: 'Open Daily Note',
-            arguments: [element]
+            arguments: [element.filename] // Pass the filename as an argument
         };
 
         return treeItem;
@@ -110,9 +110,9 @@ export function activate(context: vscode.ExtensionContext) {
         })
     );
 
-    // Command to open today's daily note
+    // Command to open a daily note
     context.subscriptions.push(
-        vscode.commands.registerCommand('dailyNotes.openNote', async () => {
+        vscode.commands.registerCommand('dailyNotes.openNote', async (filename?: string) => {
             try {
                 const dateFormat = vscode.workspace.getConfiguration().get<string>('dailyNotes.dateFormat') || 'yyyy-MM-dd';
                 console.log(`Date format from config: ${dateFormat}`);
@@ -134,24 +134,23 @@ export function activate(context: vscode.ExtensionContext) {
                     fs.mkdirSync(folderPath, { recursive: true });
                 }
 
-                const today = moment().format(dateFormat === 'yyyymmdd' ? 'YYYYMMDD' : 'YYYY-MM-DD');
-                console.log(`Today's date formatted: ${today}`);
-                
-                const todayFile = `${today}.md`;
-                const todayFilePath = path.join(folderPath, todayFile);
-                console.log(`Today's file path: ${todayFilePath}`);
-
-                if (!fs.existsSync(todayFilePath)) {
-                    console.log(`Creating new daily note: ${todayFilePath}`);
-                    const template = `# ${today}\n\n## Tasks\n\n- [ ] \n\n## Notes\n\n`;
-                    fs.writeFileSync(todayFilePath, template, 'utf8');
-                    console.log('File created successfully');
+                let filePath: string;
+                if (filename) {
+                    console.log('Open Existing Daily note');
+                    filePath = path.join(folderPath, filename);
                 } else {
-                    console.log('Daily note already exists');
+                    const today = moment().format(dateFormat === 'yyyymmdd' ? 'YYYYMMDD' : 'YYYY-MM-DD');
+                    const todayFile = `${today}.md`;
+                    filePath = path.join(folderPath, todayFile);
+                    console.log(`Creating new daily note: ${filePath}`);
+
+                    if (!fs.existsSync(filePath)) {
+                        const template = `# ${today}\n\n## Tasks\n\n- [ ] \n\n## Notes\n\n`;
+                        fs.writeFileSync(filePath, template, 'utf8');
+                    }
                 }
 
-                console.log('Opening document...');
-                const document = await vscode.workspace.openTextDocument(todayFilePath);
+                const document = await vscode.workspace.openTextDocument(filePath);
                 console.log('Showing text document...');
                 await vscode.window.showTextDocument(document);
                 console.log('Document opened successfully');
@@ -202,6 +201,5 @@ export function activate(context: vscode.ExtensionContext) {
         })
     );
 }
-  
 
 export function deactivate() {}
