@@ -143,7 +143,7 @@ export function activate(context: vscode.ExtensionContext) {
 
                 if (!fs.existsSync(todayFilePath)) {
                     console.log(`Creating new daily note: ${todayFilePath}`);
-                    const template = `# Daily Note - ${today}\n\n## Tasks\n\n- [ ] \n\n## Notes\n\n`;
+                    const template = `# ${today}\n\n## Tasks\n\n- [ ] \n\n## Notes\n\n`;
                     fs.writeFileSync(todayFilePath, template, 'utf8');
                     console.log('File created successfully');
                 } else {
@@ -162,31 +162,46 @@ export function activate(context: vscode.ExtensionContext) {
         })
     );
 
-    // Add this to your activate function
+    // Command to add title from filename
     context.subscriptions.push(
         vscode.commands.registerCommand('dailyNotes.addTitle', async () => {
-            const editor = vscode.window.activeTextEditor;
-            if (!editor) {
-                vscode.window.showErrorMessage('No active editor');
-                return;
+            console.log(`dailyNotes.addTitle called`);
+            try {
+                const editor = vscode.window.activeTextEditor;
+                if (!editor) {
+                    vscode.window.showErrorMessage('No active editor');
+                    return;
+                }
+
+                const document = editor.document;
+                const filename = path.basename(document.fileName, '.md');
+                console.log(`Filename: ${filename}`);
+                
+                // Convert filename to title
+                const title = filename
+                    .split(/[-_]/)
+                    .map(word => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+                    .join(' ');
+                console.log(`Title: ${title}`);
+
+                // Get the active cursor position
+                const position = editor.selection.active;
+                console.log(`Cursor position: ${position.line}, ${position.character}`);
+
+                // Create edit to insert title at the cursor position
+                const edit = new vscode.WorkspaceEdit();
+                edit.insert(document.uri, position, `# ${title}\n\n`);
+                console.log('Inserting title...');
+
+                await vscode.workspace.applyEdit(edit);
+                console.log('Title inserted successfully');
+            } catch (error) {
+                console.error('Error in addTitle command:', error);
+                vscode.window.showErrorMessage(`Failed to add title: ${error}`);
             }
-
-            const document = editor.document;
-            const filename = path.basename(document.fileName, '.md');
-            
-            // Convert filename to title
-            const title = filename
-                .split(/[-_]/)
-                .map(word => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
-                .join(' ');
-
-            // Create edit to insert title at start of document
-            const edit = new vscode.WorkspaceEdit();
-            edit.insert(document.uri, new vscode.Position(0, 0), `# ${title}\n\n`);
-
-            await vscode.workspace.applyEdit(edit);
         })
     );
 }
+  
 
 export function deactivate() {}

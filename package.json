@@ -30,15 +30,15 @@
     "commands": [
       {
         "command": "dailyNotes.refresh",
-        "title": "Refresh Daily Notes"
+        "title": "dailyNotes: Refresh Daily Notes"
       },
       {
         "command": "dailyNotes.openNote",
-        "title": "Open Daily Note"
+        "title": "dailyNotes: Open Daily Note"
       },
       {
         "command": "dailyNotes.addTitle",
-        "title": "Add Title from Filename"
+        "title": "dailyNotes: Insert Title from Filename"
     }
     ],
     "configuration": {
