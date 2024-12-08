@@ -17,6 +17,7 @@ class DailyNotesProvider implements vscode.TreeDataProvider<DailyNote> {
 
     refresh(): void {
         this._onDidChangeTreeData.fire();
+        // console.log("Refreshed Daily Notes")
     }
 
     getTreeItem(element: DailyNote): vscode.TreeItem {
@@ -65,16 +66,16 @@ class DailyNotesProvider implements vscode.TreeDataProvider<DailyNote> {
         // Read and process daily notes
         try {
             const files = await fs.promises.readdir(folderPath);
-            console.log(`Files in folder: ${files.join(', ')}`);
+            // console.log(`Files in folder: ${files.join(', ')}`);
             
             const dailyNotes: DailyNote[] = files
                 .filter(file => dateRegex.test(file))
                 .map(filename => {
-                    console.log(`Processing file: ${filename}`);
+                    // console.log(`Processing file: ${filename}`);
                     const fullPath = path.join(folderPath, filename);
                     const dateString = filename.replace('.md', '');
                     const date = moment(dateString, dateFormat === 'yyyymmdd' ? 'YYYYMMDD' : 'YYYY-MM-DD').toDate();
-                    console.log(`Parsed date: ${date}`);
+                    // console.log(`Parsed date: ${date}`);
 
                     return {
                         filename,
@@ -84,12 +85,12 @@ class DailyNotesProvider implements vscode.TreeDataProvider<DailyNote> {
                 })
                 .filter(note => {
                     const isValidDate = !isNaN(note.date.getTime());
-                    console.log(`File: ${note.filename}, Valid date: ${isValidDate}`);
+                    // console.log(`File: ${note.filename}, Valid date: ${isValidDate}`);
                     return isValidDate;
                 })
                 .sort((a, b) => b.date.getTime() - a.date.getTime());
 
-            console.log(`Filtered notes: ${dailyNotes.map(note => note.filename).join(', ')}`);
+            // console.log(`Filtered notes: ${dailyNotes.map(note => note.filename).join(', ')}`);
             return dailyNotes;
         } catch (err) {
             vscode.window.showErrorMessage(`Error reading daily notes: ${err}`);
@@ -115,10 +116,10 @@ export function activate(context: vscode.ExtensionContext) {
         vscode.commands.registerCommand('dailyNotes.openNote', async (filename?: string) => {
             try {
                 const dateFormat = vscode.workspace.getConfiguration().get<string>('dailyNotes.dateFormat') || 'yyyy-MM-dd';
-                console.log(`Date format from config: ${dateFormat}`);
+                // console.log(`Date format from config: ${dateFormat}`);
 
                 const notesDir = vscode.workspace.rootPath || '';
-                console.log(`Notes directory: ${notesDir}`);
+                // console.log(`Notes directory: ${notesDir}`);
 
                 if (!notesDir) {
                     vscode.window.showErrorMessage('Workspace folder is not set.');
@@ -127,33 +128,41 @@ export function activate(context: vscode.ExtensionContext) {
 
                 const notesFolder = vscode.workspace.getConfiguration().get<string>('dailyNotes.folder') || '';
                 const folderPath = path.join(notesDir, notesFolder);
-                console.log(`Full folder path: ${folderPath}`);
+                // console.log(`Full folder path: ${folderPath}`);
 
                 if (!fs.existsSync(folderPath)) {
-                    console.log(`Creating folder: ${folderPath}`);
+                    // console.log(`Creating folder: ${folderPath}`);
                     fs.mkdirSync(folderPath, { recursive: true });
                 }
 
                 let filePath: string;
                 if (filename) {
-                    console.log('Open Existing Daily note');
+                    // console.log('Open Existing Daily note');
                     filePath = path.join(folderPath, filename);
                 } else {
                     const today = moment().format(dateFormat === 'yyyymmdd' ? 'YYYYMMDD' : 'YYYY-MM-DD');
                     const todayFile = `${today}.md`;
                     filePath = path.join(folderPath, todayFile);
-                    console.log(`Creating new daily note: ${filePath}`);
+                    // console.log(`Creating new daily note: ${filePath}`);
 
                     if (!fs.existsSync(filePath)) {
-                        const template = `# ${today}\n\n## Tasks\n\n- [ ] \n\n## Notes\n\n`;
+                        const template = `# Daily Note - ${today}\n\n## Tasks\n\n- [ ] \n\n## Notes\n\n`;
                         fs.writeFileSync(filePath, template, 'utf8');
+                        // console.log('File created successfully');
+                    } else {
+                        // console.log('Daily note already exists');
                     }
                 }
 
+                // console.log('Opening document...');
                 const document = await vscode.workspace.openTextDocument(filePath);
-                console.log('Showing text document...');
-                await vscode.window.showTextDocument(document);
-                console.log('Document opened successfully');
+                await vscode.window.showTextDocument(document, { preview: false });
+
+                
+
+                // console.log('Document opened successfully');
+                dailyNotesProvider.refresh();
+
             } catch (error) {
                 console.error('Error in openNote command:', error);
                 vscode.window.showErrorMessage(`Failed to open daily note: ${error}`);
@@ -181,19 +190,19 @@ export function activate(context: vscode.ExtensionContext) {
                     .split(/[-_]/)
                     .map(word => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
                     .join(' ');
-                console.log(`Title: ${title}`);
+                // console.log(`Title: ${title}`);
 
                 // Get the active cursor position
                 const position = editor.selection.active;
-                console.log(`Cursor position: ${position.line}, ${position.character}`);
+                // console.log(`Cursor position: ${position.line}, ${position.character}`);
 
                 // Create edit to insert title at the cursor position
                 const edit = new vscode.WorkspaceEdit();
                 edit.insert(document.uri, position, `# ${title}\n\n`);
-                console.log('Inserting title...');
+                // console.log('Inserting title...');
 
                 await vscode.workspace.applyEdit(edit);
-                console.log('Title inserted successfully');
+                // console.log('Title inserted successfully');
             } catch (error) {
                 console.error('Error in addTitle command:', error);
                 vscode.window.showErrorMessage(`Failed to add title: ${error}`);
@@ -201,5 +210,7 @@ export function activate(context: vscode.ExtensionContext) {
         })
     );
 }
+
+
 
 export function deactivate() {}
