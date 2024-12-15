@@ -2,13 +2,17 @@
 
 ## Features
 
-- Adds a panel to list all daily notes, where the notes are named in either yyyyddmm or yyyy-mm-dd format.
+Adds a panel to list all daily notes, where the notes are named in either yyyyddmm or yyyy-mm-dd format. You can specify the folder where the notes are stored in the settings.
 
-Commands:
+![Create DailyNote](/resources/create-daily-note.gif)
 
-- Open today's daily not
-- Add tHe name of the file as a heading, converting `-` & `_` to spaces and capitalizing each words
-- Refresh daily notes
+In addition adds a command to add the file name as a Title (at the cursor position)
+
+## Commands
+
+- `dailyNotes.refresh`: Open today's daily note
+- `dailyNotes.openNote`: Add the name of the file as a heading, converting `-` & `_` to spaces and capitalizing each words
+- `dailyNotes.addTitle`: Refresh daily notes Panel
 
 ## Extension Settings
 
@@ -25,6 +29,13 @@ This extension contributes the following settings:
 
 Users appreciate release notes as you update your extension.
 
+### 0.0.2
+
+**Date:** 2024-12-15
+**Notes:** 
+- Fixed the readme file
+
 ### 0.0.1
 
-First release
+**Date:** 2024-12-15
+**Notes:** First release
