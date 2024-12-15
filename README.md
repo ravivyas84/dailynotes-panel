@@ -1,7 +1,5 @@
 # README dailynotes-panel 
 
-This is the README for your extension "dailynotes-panel". After writing up a brief description, we recommend including the following sections.
-
 ## Features
 
 - Adds a panel to list all daily notes, where the notes are named in either yyyyddmm or yyyy-mm-dd format.

@@ -76,5 +76,10 @@
     "@types/node": "^22.10.0",
     "@types/vscode": "^1.95.0",
     "typescript": "^5.7.2"
+  },
+  "publisher": "ravivyas",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ravivyas84/dailynotes-panel"
   }
 }
