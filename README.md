@@ -8,6 +8,10 @@ Adds a panel to list all daily notes, where the notes are named in either yyyydd
 
 In addition adds a command to add the file name as a Title (at the cursor position)
 
+## Providing Feedback
+
+You can raise an issue on the [github repo](https://github.com/ravivyas84/dailynotes-panel/issues)
+
 ## Commands
 
 - `dailyNotes.refresh`: Open today's daily note
@@ -29,10 +33,18 @@ This extension contributes the following settings:
 
 Users appreciate release notes as you update your extension.
 
+### 0.0.3
+
+**Date:** 2025-01-04
+**Notes:**
+
+- Showing a message when daily notes folder is not set
+  
 ### 0.0.2
 
 **Date:** 2024-12-15
-**Notes:** 
+**Notes:**
+
 - Fixed the readme file
 
 ### 0.0.1
