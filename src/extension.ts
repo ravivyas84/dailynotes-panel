@@ -47,7 +47,13 @@ class DailyNotesProvider implements vscode.TreeDataProvider<DailyNote> {
         // Validate notes folder
         if (!notesFolder) {
             vscode.window.showInformationMessage('Please configure the daily notes folder in settings');
-            return [];
+            // Return a placeholder tree item with your message
+            const placeholderNote: DailyNote = {
+                filename: 'No folder found. Please configure the daily notes folder in settings.',
+                fullPath: '',
+                date: new Date('2000-01-01')
+            };
+            return [placeholderNote];
         }
 
         const folderPath = path.join(vscode.workspace.rootPath || '', notesFolder);

@@ -2,7 +2,7 @@
   "name": "dailynotes-panel",
   "displayName": "dailynotes panel",
   "description": "An extension to help you with your daily notes. It has a panel which lists your daily notes in order",
-  "version": "0.0.1",
+  "version": "0.0.3",
   "engines": {
     "vscode": "^1.95.0"
   },
