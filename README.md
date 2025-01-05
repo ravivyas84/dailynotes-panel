@@ -33,6 +33,13 @@ This extension contributes the following settings:
 
 Users appreciate release notes as you update your extension.
 
+### 0.0.4
+
+**Date:** 2025-01-06
+**Notes:**
+
+- Added an icon for the extension.
+  
 ### 0.0.3
 
 **Date:** 2025-01-04

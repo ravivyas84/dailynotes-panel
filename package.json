@@ -1,6 +1,7 @@
 {
   "name": "dailynotes-panel",
   "displayName": "dailynotes panel",
+  "icon": "resources/dailyNotes.png",
   "description": "An extension to help you with your daily notes. It has a panel which lists your daily notes in order",
   "version": "0.0.3",
   "engines": {
