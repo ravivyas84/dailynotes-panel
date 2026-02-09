@@ -25,6 +25,10 @@
         {
           "id": "dailyNotes",
           "name": "Daily Notes"
+        },
+        {
+          "id": "todoView",
+          "name": "Open Tasks"
         }
       ]
     },
@@ -40,6 +44,10 @@
       {
         "command": "dailyNotes.addTitle",
         "title": "dailyNotes: Insert Title from Filename"
+      },
+      {
+        "command": "dailyNotes.generateTodo",
+        "title": "dailyNotes: Generate todo.md from All Notes"
       }
     ],
     "configuration": {
@@ -65,7 +73,8 @@
   "activationEvents": [
     "onCommand:dailyNotes.refresh",
     "onCommand:dailyNotes.openNote",
-    "onCommand:dailyNotes.addTitle"
+    "onCommand:dailyNotes.addTitle",
+    "onCommand:dailyNotes.generateTodo"
   ],
   "main": "./out/extension.js",
   "scripts": {
