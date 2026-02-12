@@ -3,7 +3,7 @@
   "displayName": "dailynotes panel",
   "icon": "resources/dailyNotes.png",
   "description": "An extension to help you with your daily notes. It has a panel which lists your daily notes in order",
-  "version": "0.0.4",
+  "version": "0.0.6",
   "engines": {
     "vscode": "^1.95.0"
   },
@@ -48,6 +48,10 @@
       {
         "command": "dailyNotes.generateTodo",
         "title": "dailyNotes: Generate todo.md from All Notes"
+      },
+      {
+        "command": "dailyNotes.generateSampleTodo",
+        "title": "dailyNotes: Generate Sample Todo Data"
       }
     ],
     "configuration": {
@@ -66,15 +70,24 @@
           ],
           "default": "yyyy-mm-dd",
           "description": "Date format for daily notes"
+        },
+        "dailyNotes.autoSaveEnabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Autosave all dirty files every 10 seconds and when switching editors; updates todo processing after autosaves."
         }
       }
     }
   },
   "activationEvents": [
+    "onStartupFinished",
+    "onView:dailyNotes",
+    "onView:todoView",
     "onCommand:dailyNotes.refresh",
     "onCommand:dailyNotes.openNote",
     "onCommand:dailyNotes.addTitle",
-    "onCommand:dailyNotes.generateTodo"
+    "onCommand:dailyNotes.generateTodo",
+    "onCommand:dailyNotes.generateSampleTodo"
   ],
   "main": "./out/extension.js",
   "scripts": {

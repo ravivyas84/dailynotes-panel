@@ -10,7 +10,9 @@ A VS Code extension for managing daily notes with built-in task tracking. It pro
 - **Open Tasks Panel** — Aggregates all uncompleted tasks from every daily note, grouped by `+Project`, sorted by priority. Click a task to jump to its source note.
 - **Task Rollover** — When creating today's note, uncompleted tasks from the most recent previous note are automatically carried forward.
 - **Generate todo.md** — Scans all daily notes and writes a `todo.md` with every task grouped by project, including dates and priority.
+- **Generate Sample Todo Data** — Creates (or appends to) `2000-01-01.md` with demo tasks and sample note text for quick walkthroughs.
 - **Insert Title from Filename** — Converts the current filename into a heading at the cursor position (e.g., `my-meeting-notes` becomes `# My Meeting Notes`).
+- **Optional Autosave + Todo Processing** — When enabled, autosaves dirty files every 10 seconds and on editor switch, then refreshes todo processing for changed daily-note files.
 
 ## Task Syntax
 
@@ -42,6 +44,22 @@ Tasks can have multiple project and context tags.
 | `dailyNotes: Open Daily Note` | Open today's note (creates it if it doesn't exist, with task rollover) |
 | `dailyNotes: Insert Title from Filename` | Insert the filename as a `# Heading` at the cursor |
 | `dailyNotes: Generate todo.md from All Notes` | Scan all notes and write a grouped `todo.md` |
+| `dailyNotes: Generate Sample Todo Data` | Create/append `2000-01-01.md` with sample tasks for demos, then refresh todo processing |
+
+### Command Details
+
+#### `dailyNotes: Generate Sample Todo Data`
+
+- Creates `2000-01-01.md` in your configured `dailyNotes.folder` if it does not exist.
+- Adds a sample note header and demo task list using priorities, projects, contexts, completed and uncompleted tasks.
+- If `2000-01-01.md` already exists, appends another generated sample block instead of overwriting.
+- Reprocesses tasks and refreshes the **Open Tasks** tree so demo data appears immediately.
+
+#### First-Open Demo Prompt
+
+- The first time the **Daily Notes** panel is opened, the extension prompts you to run demo setup.
+- If you choose **Run Demo Now**, it runs `dailyNotes: Generate Sample Todo Data` automatically.
+- If you choose **Later**, nothing is changed.
 
 ## Extension Settings
 
@@ -49,6 +67,16 @@ Tasks can have multiple project and context tags.
 |---------|------|---------|-------------|
 | `dailyNotes.folder` | `string` | `""` | Folder where daily notes are stored (relative to workspace root) |
 | `dailyNotes.dateFormat` | `enum` | `yyyy-mm-dd` | Filename date format: `yyyymmdd` or `yyyy-mm-dd` |
+| `dailyNotes.autoSaveEnabled` | `boolean` | `false` | Autosave dirty files every 10 seconds and on editor switch; process updated daily-note todos after autosaves |
+
+## Demo Quick Start
+
+1. Set `dailyNotes.folder` in VS Code settings.
+2. Open the **Daily Notes** panel.
+3. On first open, choose **Run Demo Now** (or run `dailyNotes: Generate Sample Todo Data` manually).
+4. Open `2000-01-01.md` and review/edit sample tasks.
+5. Run `dailyNotes: Generate todo.md from All Notes` to produce a grouped `todo.md`.
+6. (Optional) Enable `dailyNotes.autoSaveEnabled` to autosave every 10 seconds and on editor switch with automatic todo refresh processing.
 
 ## Development
 
@@ -129,7 +157,20 @@ You can raise an issue on the [GitHub repo](https://github.com/ravivyas84/dailyn
 
 ## Release Notes
 
-### 0.0.5 (Unreleased)
+### 0.0.6 (Current)
+
+**Note:** `0.0.5` was skipped. The current release is `0.0.6`.
+
+- Added `dailyNotes: Generate Sample Todo Data` command to create/append `2000-01-01.md` with demo tasks.
+- Added first-open Daily Notes panel prompt to run demo setup quickly.
+- Added empty-state action in the Daily Notes panel to generate demo data when no notes exist.
+- Added `dailyNotes.autoSaveEnabled` setting to autosave dirty files every 10 seconds and on editor switch.
+- After autosave, daily-note task changes are reprocessed and todo output is refreshed.
+- Updated documentation for new commands, settings, and demo quick start.
+
+### 0.0.5 (Skipped)
+
+**Note:** Version `0.0.5` was intentionally skipped.
 
 - Migrated from moment.js to date-fns (smaller bundle)
 - Added task parser with todo.txt-style syntax (priority, +project, @context)
