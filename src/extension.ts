@@ -1,7 +1,8 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
-import { DailyNote, DateFormatOption, getDateRegex, isToday, formatToday, filenameToTitle, processNoteFiles } from './utils';
+import * as crypto from 'crypto';
+import { DailyNote, DateFormatOption, getDateRegex, isToday, formatDate, formatToday, filenameToTitle, processNoteFiles } from './utils';
 import { Task, parseTasksFromContent, getUncompletedTasks, groupTasksByProject, sortTasksByPriority, formatTodoMd, formatTaskLine, buildRolloverSection } from './taskParser';
 
 const SAMPLE_NOTE_FILENAME = '2000-01-01.md';
@@ -10,15 +11,129 @@ const SAMPLE_NOTE_INTRO = 'This is a sample note.';
 const CONFIG_PLACEHOLDER_PATH = '__CONFIG_PLACEHOLDER__';
 const DEMO_PLACEHOLDER_PATH = '__DEMO_PLACEHOLDER__';
 const SAMPLE_TASKS = [
-    '- [ ] (A) Fix critical login bug +Backend @work',
+    '- [ ] (A) Fix critical login bug due:2000-01-05 +Backend @work',
     '- [ ] (A) Draft weekly roadmap +Planning @work',
-    '- [ ] (B) Review UI spacing updates +UI +Web @work',
+    '- [ ] (B) Review UI spacing updates +UI due:2000-01-03 +Web @work',
     '- [ ] (B) Follow up with vendor about invoices +Finance @office',
     '- [ ] (C) Write release notes for the sprint +Docs @work',
     '- [x] (C) Update dependency versions +Backend',
     '- [ ] Buy groceries @home',
     '- [ ] Plan weekend trip +Personal @phone',
 ];
+
+type TaskMeta = { id?: string; cd?: string; due?: string; dd?: string };
+const TASK_LINE_REGEX = /^(\s*-\s+\[([ xX])\]\s*)(?:\(([A-Z])\)\s+)?(.+?)\s*$/;
+const META_TOKEN_REGEX = /\b(id|cd|dd|due):([^\s]+)\b/gi;
+
+function generateShortId(existingIds: Set<string>): string {
+    for (let length = 3; length <= 10; length++) {
+        for (let attempt = 0; attempt < 25; attempt++) {
+            let candidate = '';
+            while (candidate.length < length) {
+                candidate += crypto.randomBytes(4).readUInt32BE(0).toString(36);
+            }
+            candidate = candidate.slice(0, length).toLowerCase();
+            if (!existingIds.has(candidate)) {
+                existingIds.add(candidate);
+                return candidate;
+            }
+        }
+    }
+
+    // Extremely unlikely fallback.
+    const fallback = crypto.randomUUID().replace(/-/g, '').slice(0, 6).toLowerCase();
+    existingIds.add(fallback);
+    return fallback;
+}
+
+function stripAndCollectMeta(text: string): { cleanedText: string; meta: TaskMeta } {
+    const meta: TaskMeta = {};
+    const cleanedText = text
+        .replace(META_TOKEN_REGEX, (_m, key: string, value: string) => {
+            const k = String(key).toLowerCase();
+            if (k === 'id') { meta.id = value; }
+            if (k === 'cd') { meta.cd = value; }
+            if (k === 'due') { meta.due = value; }
+            if (k === 'dd') { meta.dd = value; }
+            return '';
+        })
+        .replace(/\s+/g, ' ')
+        .trim();
+
+    META_TOKEN_REGEX.lastIndex = 0;
+    return { cleanedText, meta };
+}
+
+function buildMetaSuffix(meta: TaskMeta): string {
+    const parts: string[] = [];
+    if (meta.id) { parts.push(`id:${meta.id}`); }
+    if (meta.cd) { parts.push(`cd:${meta.cd}`); }
+    if (meta.due) { parts.push(`due:${meta.due}`); }
+    if (meta.dd) { parts.push(`dd:${meta.dd}`); }
+    return parts.length > 0 ? ` ${parts.join(' ')}` : '';
+}
+
+function computeTaskNormalizationEdits(document: vscode.TextDocument, dateFormat: DateFormatOption): vscode.TextEdit[] {
+    const edits: vscode.TextEdit[] = [];
+    const existingIds = new Set<string>();
+
+    // Pre-scan for existing ids to avoid duplicates when generating new ones.
+    for (let i = 0; i < document.lineCount; i++) {
+        const lineText = document.lineAt(i).text;
+        const m = lineText.match(/\bid:([a-z0-9]{3,})\b/i);
+        if (m?.[1]) {
+            existingIds.add(m[1].toLowerCase());
+        }
+    }
+
+    const sourceDateFromFilename = path.basename(document.fileName, '.md');
+    const ddToday = formatDate(new Date(), dateFormat);
+
+    for (let i = 0; i < document.lineCount; i++) {
+        const line = document.lineAt(i);
+        const match = line.text.match(TASK_LINE_REGEX);
+        if (!match) {
+            continue;
+        }
+
+        const prefix = match[1]; // includes indentation + "- [ ] " etc.
+        const completed = match[2].toLowerCase() === 'x';
+        const priority = match[3] || null;
+        const body = match[4] ?? '';
+
+        const { cleanedText, meta } = stripAndCollectMeta(body);
+
+        // Skip blank placeholder tasks (e.g. "- [ ]") to avoid generating ids for empty items.
+        if (cleanedText.length === 0) {
+            continue;
+        }
+
+        if (!meta.id) {
+            meta.id = generateShortId(existingIds);
+        }
+
+        if (!meta.cd) {
+            meta.cd = sourceDateFromFilename;
+        }
+
+        if (completed) {
+            if (!meta.dd) {
+                meta.dd = ddToday;
+            }
+        } else if (meta.dd) {
+            delete meta.dd;
+        }
+
+        const priorityPrefix = priority ? `(${priority}) ` : '';
+        const normalized = `${prefix}${priorityPrefix}${cleanedText}${buildMetaSuffix(meta)}`;
+
+        if (normalized !== line.text) {
+            edits.push(vscode.TextEdit.replace(line.range, normalized));
+        }
+    }
+
+    return edits;
+}
 
 // ---------------------------------------------------------------------------
 // Daily Notes Tree View
@@ -102,7 +217,7 @@ class DailyNotesProvider implements vscode.TreeDataProvider<DailyNote> {
             return [placeholderNote];
         }
 
-        const folderPath = path.join(vscode.workspace.rootPath || '', notesFolder);
+        const folderPath = path.join(getWorkspaceRootPath(), notesFolder);
 
         try {
             const files = await fs.promises.readdir(folderPath);
@@ -129,7 +244,10 @@ class DailyNotesProvider implements vscode.TreeDataProvider<DailyNote> {
 // Todo Tree View — shows open tasks grouped by project
 // ---------------------------------------------------------------------------
 
-type TodoNode = { kind: 'project'; name: string } | { kind: 'task'; task: Task };
+type TodoNode =
+    | { kind: 'project'; name: string }
+    | { kind: 'task'; task: Task }
+    | { kind: 'empty'; message: string };
 
 class TodoTreeProvider implements vscode.TreeDataProvider<TodoNode> {
     private _onDidChangeTreeData = new vscode.EventEmitter<TodoNode | undefined | null | void>();
@@ -141,6 +259,12 @@ class TodoTreeProvider implements vscode.TreeDataProvider<TodoNode> {
     }
 
     getTreeItem(element: TodoNode): vscode.TreeItem {
+        if (element.kind === 'empty') {
+            const item = new vscode.TreeItem(element.message, vscode.TreeItemCollapsibleState.None);
+            item.iconPath = new vscode.ThemeIcon('info');
+            return item;
+        }
+
         if (element.kind === 'project') {
             const count = this.tasksByProject.get(element.name)?.length ?? 0;
             const label = element.name === 'Ungrouped' ? element.name : `+${element.name}`;
@@ -150,12 +274,12 @@ class TodoTreeProvider implements vscode.TreeDataProvider<TodoNode> {
         }
 
         const t = element.task;
-        const checkbox = t.completed ? '$(check)' : '$(circle-large-outline)';
         const priority = t.priority ? `(${t.priority}) ` : '';
-        const label = `${checkbox} ${priority}${t.text}`;
+        const id = t.id ? ` id:${t.id}` : '';
+        const label = `${priority}${t.text}${id}`;
         const item = new vscode.TreeItem(label, vscode.TreeItemCollapsibleState.None);
         item.description = t.sourceDate;
-        item.tooltip = `${t.sourceFile}\nPriority: ${t.priority ?? 'none'}\nProjects: ${t.projects.join(', ') || 'none'}\nContexts: ${t.contexts.join(', ') || 'none'}`;
+        item.tooltip = `${t.sourceFile}\nPriority: ${t.priority ?? 'none'}\nID: ${t.id ?? 'none'}\nCreated: ${t.cd ?? 'none'}\nDue: ${t.due ?? 'none'}\nDone: ${t.dd ?? 'none'}\nProjects: ${t.projects.join(', ') || 'none'}\nContexts: ${t.contexts.join(', ') || 'none'}`;
 
         if (t.priority === 'A') {
             item.iconPath = new vscode.ThemeIcon('flame');
@@ -180,6 +304,10 @@ class TodoTreeProvider implements vscode.TreeDataProvider<TodoNode> {
             return sortTasksByPriority(tasks).map(task => ({ kind: 'task' as const, task }));
         }
 
+        if (element?.kind === 'empty') {
+            return [];
+        }
+
         // Root level — scan all daily notes and return project nodes
         const tasks = await scanAllTasks();
         const open = getUncompletedTasks(tasks);
@@ -192,7 +320,11 @@ class TodoTreeProvider implements vscode.TreeDataProvider<TodoNode> {
         });
 
         if (keys.length === 0) {
-            return [];
+            const cfg = getNotesFolder();
+            if (!cfg) {
+                return [{ kind: 'empty' as const, message: 'Configure dailyNotes.folder to see tasks.' }];
+            }
+            return [{ kind: 'empty' as const, message: 'No open tasks found. Add tasks to a daily note or run the demo command.' }];
         }
 
         return keys.map(name => ({ kind: 'project' as const, name }));
@@ -203,11 +335,16 @@ class TodoTreeProvider implements vscode.TreeDataProvider<TodoNode> {
 // Shared helpers
 // ---------------------------------------------------------------------------
 
+function getWorkspaceRootPath(): string {
+    // `rootPath` is deprecated and can be empty in multi-root workspaces.
+    return vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? '';
+}
+
 function getNotesFolder(): { folderPath: string; dateFormat: DateFormatOption } | null {
     const config = vscode.workspace.getConfiguration('dailyNotes');
     const notesFolder = config.get<string>('folder', '');
     const dateFormat = config.get<string>('dateFormat', 'yyyy-mm-dd') as DateFormatOption;
-    const rootPath = vscode.workspace.rootPath || '';
+    const rootPath = getWorkspaceRootPath();
 
     if (!notesFolder || !rootPath) {
         return null;
@@ -339,6 +476,35 @@ async function processUpdatedTodosFromDocument(document: vscode.TextDocument, to
     todoTreeProvider.refresh();
 }
 
+async function normalizeDailyNoteMetadata(
+    document: vscode.TextDocument,
+    cfg: { folderPath: string; dateFormat: DateFormatOption },
+    normalizingDocuments: Set<string>
+): Promise<boolean> {
+    const uri = document.uri.toString();
+    if (normalizingDocuments.has(uri)) {
+        return false;
+    }
+
+    const edits = computeTaskNormalizationEdits(document, cfg.dateFormat);
+    if (edits.length === 0) {
+        return false;
+    }
+
+    normalizingDocuments.add(uri);
+    try {
+        const edit = new vscode.WorkspaceEdit();
+        for (const e of edits) {
+            edit.replace(document.uri, e.range, e.newText);
+        }
+        await vscode.workspace.applyEdit(edit);
+        await document.save();
+        return true;
+    } finally {
+        normalizingDocuments.delete(uri);
+    }
+}
+
 function buildNewSampleNoteContent(): string {
     return `${SAMPLE_NOTE_HEADER}\n\n${SAMPLE_NOTE_INTRO}\n\n## Tasks\n\n${SAMPLE_TASKS.join('\n')}\n\n## Notes\n\n`;
 }
@@ -387,6 +553,7 @@ export function activate(context: vscode.ExtensionContext) {
     const todoTreeProvider = new TodoTreeProvider();
     vscode.window.registerTreeDataProvider('todoView', todoTreeProvider);
     const autoSavedDocuments = new Set<string>();
+    const normalizingDocuments = new Set<string>();
     let autoSaveInterval: NodeJS.Timeout | undefined;
     let previousActiveEditorUri = vscode.window.activeTextEditor?.document.uri.toString();
 
@@ -450,6 +617,17 @@ export function activate(context: vscode.ExtensionContext) {
 
     context.subscriptions.push(
         vscode.workspace.onDidSaveTextDocument(async (document) => {
+            const cfg = getNotesFolder();
+            if (cfg && isDailyNoteDocument(document, cfg.folderPath, cfg.dateFormat)) {
+                const changed = await normalizeDailyNoteMetadata(document, cfg, normalizingDocuments);
+                if (changed) {
+                    // The save above will trigger processing again; avoid double-work here.
+                    return;
+                }
+
+                await processUpdatedTodosFromDocument(document, todoTreeProvider);
+            }
+
             const uri = document.uri.toString();
             if (!autoSavedDocuments.has(uri)) {
                 return;
@@ -457,6 +635,22 @@ export function activate(context: vscode.ExtensionContext) {
 
             autoSavedDocuments.delete(uri);
             await processUpdatedTodosFromDocument(document, todoTreeProvider);
+        })
+    );
+
+    context.subscriptions.push(
+        vscode.workspace.onWillSaveTextDocument((event) => {
+            const cfg = getNotesFolder();
+            if (!cfg || !isDailyNoteDocument(event.document, cfg.folderPath, cfg.dateFormat)) {
+                return;
+            }
+
+            const edits = computeTaskNormalizationEdits(event.document, cfg.dateFormat);
+            if (edits.length === 0) {
+                return;
+            }
+
+            event.waitUntil(Promise.resolve(edits));
         })
     );
 
@@ -469,13 +663,27 @@ export function activate(context: vscode.ExtensionContext) {
         })
     );
 
+    context.subscriptions.push(
+        vscode.commands.registerCommand('dailyNotes.focusDailyNotes', async () => {
+            await vscode.commands.executeCommand('workbench.view.extension.dailyNotesContainer');
+            try { await vscode.commands.executeCommand('dailyNotes.focus'); } catch {}
+        })
+    );
+
+    context.subscriptions.push(
+        vscode.commands.registerCommand('dailyNotes.focusTodo', async () => {
+            await vscode.commands.executeCommand('workbench.view.extension.dailyNotesContainer');
+            try { await vscode.commands.executeCommand('todoView.focus'); } catch {}
+        })
+    );
+
     // Open or create a daily note (with task rollover)
     context.subscriptions.push(
         vscode.commands.registerCommand('dailyNotes.openNote', async (filename?: string) => {
             try {
                 const dateFormat = (vscode.workspace.getConfiguration().get<string>('dailyNotes.dateFormat') || 'yyyy-mm-dd') as DateFormatOption;
 
-                const notesDir = vscode.workspace.rootPath || '';
+                const notesDir = getWorkspaceRootPath();
                 if (!notesDir) {
                     vscode.window.showErrorMessage('Workspace folder is not set.');
                     return;
@@ -583,6 +791,16 @@ export function activate(context: vscode.ExtensionContext) {
 
                 const document = await vscode.workspace.openTextDocument(result.filePath);
                 await vscode.window.showTextDocument(document, { preview: false });
+
+                const edits = computeTaskNormalizationEdits(document, cfg.dateFormat);
+                if (edits.length > 0) {
+                    const edit = new vscode.WorkspaceEdit();
+                    for (const e of edits) {
+                        edit.replace(document.uri, e.range, e.newText);
+                    }
+                    await vscode.workspace.applyEdit(edit);
+                    await document.save();
+                }
 
                 await processUpdatedTodosFromDocument(document, todoTreeProvider);
                 dailyNotesProvider.refresh();

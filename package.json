@@ -3,7 +3,7 @@
   "displayName": "dailynotes panel",
   "icon": "resources/dailyNotes.png",
   "description": "An extension to help you with your daily notes. It has a panel which lists your daily notes in order",
-  "version": "0.0.6",
+  "version": "0.1.1",
   "engines": {
     "vscode": "^1.95.0"
   },
@@ -15,7 +15,7 @@
       "activitybar": [
         {
           "id": "dailyNotesContainer",
-          "title": "Daily Notes",
+          "title": "To Do Daily Notes",
           "icon": "resources/dailyNotes.svg"
         }
       ]
@@ -28,7 +28,7 @@
         },
         {
           "id": "todoView",
-          "name": "Open Tasks"
+          "name": "To Do"
         }
       ]
     },
@@ -36,6 +36,14 @@
       {
         "command": "dailyNotes.refresh",
         "title": "dailyNotes: Refresh Daily Notes"
+      },
+      {
+        "command": "dailyNotes.focusDailyNotes",
+        "title": "dailyNotes: Focus Daily Notes Panel"
+      },
+      {
+        "command": "dailyNotes.focusTodo",
+        "title": "dailyNotes: Focus To Do Panel"
       },
       {
         "command": "dailyNotes.openNote",
@@ -84,6 +92,8 @@
     "onView:dailyNotes",
     "onView:todoView",
     "onCommand:dailyNotes.refresh",
+    "onCommand:dailyNotes.focusDailyNotes",
+    "onCommand:dailyNotes.focusTodo",
     "onCommand:dailyNotes.openNote",
     "onCommand:dailyNotes.addTitle",
     "onCommand:dailyNotes.generateTodo",

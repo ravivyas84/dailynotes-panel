@@ -21,10 +21,10 @@ Write tasks in your daily notes using markdown checkboxes with optional [todo.tx
 ```markdown
 ## Tasks
 
-- [ ] (A) Fix critical login bug +Backend @work
-- [ ] (B) Review design mockups +UI @work
-- [x] (C) Update dependencies +Backend
-- [ ] Buy groceries
+- [ ] (A) Fix critical login bug +Backend @work id:abc cd:2026-02-12 due:2026-02-20
+- [ ] (B) Review design mockups +UI @work id:def cd:2026-02-12
+- [x] (C) Update dependencies +Backend id:ghi cd:2026-02-12 dd:2026-02-14
+- [ ] Buy groceries id:jkl cd:2026-02-12
 ```
 
 | Element | Syntax | Example |
@@ -33,8 +33,21 @@ Write tasks in your daily notes using markdown checkboxes with optional [todo.tx
 | Project | `+ProjectName` | `+Backend`, `+UI` |
 | Context | `@context` | `@work`, `@phone` |
 | Completed | `[x]` or `[X]` | `- [x] Done task` |
+| ID | `id:<id>` | `id:abc` |
+| Create date | `cd:<date>` | `cd:2026-02-12` |
+| Due date | `due:<date>` | `due:2026-02-20` |
+| Done date | `dd:<date>` | `dd:2026-02-14` |
 
 Tasks can have multiple project and context tags.
+
+### Metadata Auto-Management
+
+- The extension auto-adds `id:` and `cd:` to tasks when you save a daily note.
+- `cd:` defaults to the date in the note filename.
+- When a task is completed (`[x]`), the extension adds `dd:` using today’s date; if you un-complete it, `dd:` is removed.
+- `due:` is user-managed (the extension does not add or change it).
+- `id:`, `cd:`, `due:`, `dd:` are normalized to postfix tokens at the end of the task line on save (if you type them earlier in the line, they are moved to the end).
+- Date token format matches your configured `dailyNotes.dateFormat`.
 
 ## Commands
 
@@ -74,7 +87,7 @@ Tasks can have multiple project and context tags.
 1. Set `dailyNotes.folder` in VS Code settings.
 2. Open the **Daily Notes** panel.
 3. On first open, choose **Run Demo Now** (or run `dailyNotes: Generate Sample Todo Data` manually).
-4. Open `2000-01-01.md` and review/edit sample tasks.
+4. Open `2000-01-01.md` and save once to let the extension add `id:`/`cd:`/`dd:` tokens and normalize any `due:` tokens to the end.
 5. Run `dailyNotes: Generate todo.md from All Notes` to produce a grouped `todo.md`.
 6. (Optional) Enable `dailyNotes.autoSaveEnabled` to autosave every 10 seconds and on editor switch with automatic todo refresh processing.
 

@@ -233,11 +233,11 @@ describe('formatTaskLine', () => {
     });
 
     it('includes date when requested', () => {
-        expect(formatTaskLine(base, true)).toBe('- [ ] Do something — 2025-02-09');
+        expect(formatTaskLine(base, true)).toBe('- [ ] Do something — [[2025-02-09]]');
     });
 
     it('includes both priority and date', () => {
-        expect(formatTaskLine({ ...base, priority: 'B' }, true)).toBe('- [ ] (B) Do something — 2025-02-09');
+        expect(formatTaskLine({ ...base, priority: 'B' }, true)).toBe('- [ ] (B) Do something — [[2025-02-09]]');
     });
 });
 
@@ -258,9 +258,9 @@ describe('formatTodoMd', () => {
         expect(md).toContain('## +Backend');
         expect(md).toContain('## +UI');
         expect(md).toContain('## Ungrouped');
-        expect(md).toContain('- [ ] (A) Fix bug +Backend @work — 2025-02-09');
-        expect(md).toContain('- [x] (B) Design review +UI — 2025-02-08');
-        expect(md).toContain('- [ ] Buy milk — 2025-02-07');
+        expect(md).toContain('- [ ] (A) Fix bug +Backend @work — [[2025-02-09]]');
+        expect(md).toContain('- [x] (B) Design review +UI — [[2025-02-08]]');
+        expect(md).toContain('- [ ] Buy milk — [[2025-02-07]]');
     });
 
     it('puts Ungrouped last', () => {
