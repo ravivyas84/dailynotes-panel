@@ -37,6 +37,14 @@ export function formatToday(dateFormat: DateFormatOption): string {
 }
 
 /**
+ * Formats an arbitrary date using the configured daily notes filename date format.
+ */
+export function formatDate(date: Date, dateFormat: DateFormatOption): string {
+    const formatString = dateFormat === 'yyyymmdd' ? 'yyyyMMdd' : 'yyyy-MM-dd';
+    return format(date, formatString);
+}
+
+/**
  * Checks whether two dates fall on the same calendar day.
  */
 export function isToday(date: Date): boolean {

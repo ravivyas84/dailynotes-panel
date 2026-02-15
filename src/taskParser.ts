@@ -2,6 +2,10 @@ export interface Task {
     completed: boolean;
     priority: string | null;
     text: string;
+    id?: string;
+    cd?: string;
+    due?: string;
+    dd?: string;
     projects: string[];
     contexts: string[];
     sourceDate: string;
@@ -12,6 +16,27 @@ export interface Task {
 const TASK_REGEX = /^-\s+\[([ xX])\]\s*(?:\(([A-Z])\)\s+)?(.+)$/;
 const PROJECT_TAG = /\+(\S+)/g;
 const CONTEXT_TAG = /@(\S+)/g;
+const META_TOKEN = /\b(id|cd|dd|due):([^\s]+)\b/gi;
+
+function parseAndStripMetadata(text: string): { cleanedText: string; meta: Pick<Task, 'id' | 'cd' | 'dd' | 'due'> } {
+    const meta: Pick<Task, 'id' | 'cd' | 'dd' | 'due'> = {};
+    const cleanedText = text
+        .replace(META_TOKEN, (_m, key: string, value: string) => {
+            const k = String(key).toLowerCase();
+            if (k === 'id') { meta.id = value; }
+            if (k === 'cd') { meta.cd = value; }
+            if (k === 'due') { meta.due = value; }
+            if (k === 'dd') { meta.dd = value; }
+            return '';
+        })
+        .replace(/\s+/g, ' ')
+        .trim();
+
+    // Reset global regex state for callers that might reuse META_TOKEN.
+    META_TOKEN.lastIndex = 0;
+
+    return { cleanedText, meta };
+}
 
 /**
  * Parses a single markdown checkbox line into a Task, or returns null if not a task.
@@ -28,7 +53,8 @@ export function parseTaskLine(line: string, sourceDate: string, sourceFile: stri
 
     const completed = match[1].toLowerCase() === 'x';
     const priority = match[2] || null;
-    const text = match[3].trim();
+    const originalText = match[3].trim();
+    const { cleanedText: text, meta } = parseAndStripMetadata(originalText);
 
     const projects = extractTags(text, PROJECT_TAG);
     const contexts = extractTags(text, CONTEXT_TAG);
@@ -37,6 +63,7 @@ export function parseTaskLine(line: string, sourceDate: string, sourceFile: stri
         completed,
         priority,
         text,
+        ...meta,
         projects,
         contexts,
         sourceDate,
@@ -109,8 +136,15 @@ export function groupTasksByProject(tasks: Task[]): Map<string, Task[]> {
 export function formatTaskLine(task: Task, includeDate: boolean = false): string {
     const checkbox = task.completed ? '[x]' : '[ ]';
     const priority = task.priority ? `(${task.priority}) ` : '';
-    const date = includeDate ? ` — ${task.sourceDate}` : '';
-    return `- ${checkbox} ${priority}${task.text}${date}`;
+    const date = includeDate ? ` — [[${task.sourceDate}]]` : '';
+    const meta: string[] = [];
+    if (task.id) { meta.push(`id:${task.id}`); }
+    if (task.cd) { meta.push(`cd:${task.cd}`); }
+    if (task.due) { meta.push(`due:${task.due}`); }
+    if (task.dd) { meta.push(`dd:${task.dd}`); }
+
+    const metaSuffix = meta.length > 0 ? ` ${meta.join(' ')}` : '';
+    return `- ${checkbox} ${priority}${task.text}${metaSuffix}${date}`;
 }
 
 /**
@@ -119,7 +153,12 @@ export function formatTaskLine(task: Task, includeDate: boolean = false): string
  */
 export function formatTodoMd(tasks: Task[]): string {
     const grouped = groupTasksByProject(tasks);
-    const lines: string[] = ['# Tasks', ''];
+    const lines: string[] = [
+        '<!-- GENERATED FILE: Do not edit by hand. Run \"dailyNotes: Generate todo.md from All Notes\". -->',
+        '',
+        '# Tasks',
+        ''
+    ];
 
     // Sort project names, but put "Ungrouped" last
     const keys = [...grouped.keys()].sort((a, b) => {
