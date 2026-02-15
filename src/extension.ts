@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
 import * as crypto from 'crypto';
-import { DailyNote, DateFormatOption, getDateRegex, isToday, formatDate, formatToday, filenameToTitle, processNoteFiles } from './utils';
+import { DailyNote, DateFormatOption, getDateRegex, isToday, formatDate, formatToday, parseDateFromFilename, filenameToTitle, processNoteFiles } from './utils';
 import { Task, parseTasksFromContent, getUncompletedTasks, groupTasksByProject, sortTasksByPriority, formatTodoMd, formatTaskLine, buildRolloverSection } from './taskParser';
 
 const SAMPLE_NOTE_FILENAME = '2000-01-01.md';
@@ -332,6 +332,414 @@ class TodoTreeProvider implements vscode.TreeDataProvider<TodoNode> {
 }
 
 // ---------------------------------------------------------------------------
+// Calendar View — webview month grid (TreeView can't render a calendar grid)
+// ---------------------------------------------------------------------------
+
+type CalendarCell = {
+    day: number;
+    inMonth: boolean;
+    dateLabel: string;
+    exists: boolean;
+    isToday: boolean;
+};
+
+type CalendarModel = {
+    title: string;
+    year: number;
+    monthIndex: number;
+    dateFormat: DateFormatOption;
+    weeks: CalendarCell[][];
+};
+
+class CalendarWebviewProvider implements vscode.WebviewViewProvider {
+    private view: vscode.WebviewView | undefined;
+    private currentMonth: Date;
+    private webviewReady = false;
+    private pendingPayload: unknown | null = null;
+
+    constructor(private context: vscode.ExtensionContext) {
+        const now = new Date();
+        this.currentMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+    }
+
+    setToToday(): void {
+        const now = new Date();
+        this.currentMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+        void this.postModel();
+    }
+
+    shiftMonth(delta: number): void {
+        this.currentMonth = new Date(this.currentMonth.getFullYear(), this.currentMonth.getMonth() + delta, 1);
+        void this.postModel();
+    }
+
+    refresh(): void {
+        void this.postModel();
+    }
+
+    resolveWebviewView(webviewView: vscode.WebviewView): void {
+        this.view = webviewView;
+        this.webviewReady = false;
+
+        webviewView.webview.options = {
+            enableScripts: true,
+        };
+
+        webviewView.webview.html = this.renderHtml(webviewView.webview);
+
+        webviewView.webview.onDidReceiveMessage(async (message) => {
+            const type = message?.type;
+            if (type === 'ready') {
+                this.webviewReady = true;
+                if (this.pendingPayload) {
+                    await this.view?.webview.postMessage(this.pendingPayload);
+                    this.pendingPayload = null;
+                } else {
+                    await this.postModel();
+                }
+                return;
+            }
+            if (type === 'prevMonth') {
+                this.shiftMonth(-1);
+                return;
+            }
+            if (type === 'nextMonth') {
+                this.shiftMonth(1);
+                return;
+            }
+            if (type === 'today') {
+                this.setToToday();
+                const cfg = getNotesFolder();
+                if (cfg) {
+                    const today = formatToday(cfg.dateFormat);
+                    await openOrCreateDailyNoteForDate(today);
+                }
+                return;
+            }
+            if (type === 'create') {
+                await vscode.commands.executeCommand('dailyNotes.openNoteForDate');
+                return;
+            }
+            if (type === 'openDate' && typeof message?.dateLabel === 'string') {
+                await openOrCreateDailyNoteForDate(message.dateLabel);
+                return;
+            }
+        }, undefined, this.context.subscriptions);
+
+        webviewView.onDidChangeVisibility(() => {
+            if (webviewView.visible) {
+                void this.postModel();
+            }
+        }, undefined, this.context.subscriptions);
+
+        void this.postModel();
+    }
+
+    private getExistingDateLabels(cfg: { folderPath: string; dateFormat: DateFormatOption }): Set<string> {
+        const existing = new Set<string>();
+        const dateRegex = getDateRegex(cfg.dateFormat);
+        if (!dateRegex) {
+            return existing;
+        }
+
+        let files: string[] = [];
+        try {
+            files = fs.readdirSync(cfg.folderPath);
+        } catch {
+            return existing;
+        }
+
+        for (const f of files) {
+            if (!dateRegex.test(f)) {
+                continue;
+            }
+            existing.add(f.replace(/\.md$/i, ''));
+        }
+        return existing;
+    }
+
+    private buildModel(cfg: { folderPath: string; dateFormat: DateFormatOption }): CalendarModel {
+        const year = this.currentMonth.getFullYear();
+        const monthIndex = this.currentMonth.getMonth();
+        const monthTitle = this.currentMonth.toLocaleString(undefined, { month: 'long', year: 'numeric' });
+        const existing = this.getExistingDateLabels(cfg);
+
+        const firstOfMonth = new Date(year, monthIndex, 1);
+        const daysInMonth = new Date(year, monthIndex + 1, 0).getDate();
+
+        // Monday-first grid: 0..6 where 0=Mon, 6=Sun
+        const jsDay = firstOfMonth.getDay(); // 0=Sun..6=Sat
+        const firstDow = (jsDay + 6) % 7;
+
+        const weeks: CalendarCell[][] = [];
+        let week: CalendarCell[] = [];
+
+        const pushCell = (date: Date, inMonth: boolean) => {
+            const dateLabel = formatDate(date, cfg.dateFormat);
+            week.push({
+                day: date.getDate(),
+                inMonth,
+                dateLabel,
+                exists: existing.has(dateLabel),
+                isToday: isToday(date),
+            });
+            if (week.length === 7) {
+                weeks.push(week);
+                week = [];
+            }
+        };
+
+        // Leading days from previous month
+        for (let i = 0; i < firstDow; i++) {
+            const d = new Date(year, monthIndex, 1 - (firstDow - i));
+            pushCell(d, false);
+        }
+
+        // Current month days
+        for (let day = 1; day <= daysInMonth; day++) {
+            const d = new Date(year, monthIndex, day);
+            pushCell(d, true);
+        }
+
+        // Trailing days to fill last week
+        if (week.length > 0) {
+            const remaining = 7 - week.length;
+            const lastDay = new Date(year, monthIndex, daysInMonth);
+            for (let i = 1; i <= remaining; i++) {
+                pushCell(new Date(lastDay.getFullYear(), lastDay.getMonth(), lastDay.getDate() + i), false);
+            }
+        }
+
+        return { title: monthTitle, year, monthIndex, dateFormat: cfg.dateFormat, weeks };
+    }
+
+    private async postModel(): Promise<void> {
+        if (!this.view) {
+            return;
+        }
+
+        if (!this.webviewReady) {
+            // Webview messages posted before the script loads can be dropped; queue the next payload.
+            const cfg = getNotesFolder();
+            this.pendingPayload = cfg
+                ? { type: 'model', model: this.buildModel(cfg) }
+                : { type: 'empty', message: 'Configure dailyNotes.folder to use the calendar.' };
+            return;
+        }
+
+        const cfg = getNotesFolder();
+        if (!cfg) {
+            await this.view.webview.postMessage({ type: 'empty', message: 'Configure dailyNotes.folder to use the calendar.' });
+            return;
+        }
+
+        await this.view.webview.postMessage({ type: 'model', model: this.buildModel(cfg) });
+    }
+
+    private renderHtml(webview: vscode.Webview): string {
+        const nonce = crypto.randomBytes(16).toString('hex');
+        const csp = `default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}';`;
+
+        return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="Content-Security-Policy" content="${csp}">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <style>
+    :root {
+      --fg: var(--vscode-foreground);
+      --muted: color-mix(in srgb, var(--vscode-foreground) 55%, transparent);
+      --border: color-mix(in srgb, var(--vscode-foreground) 18%, transparent);
+      --bg: var(--vscode-sideBar-background);
+      --accent: var(--vscode-textLink-foreground);
+      --today: color-mix(in srgb, var(--vscode-button-background) 20%, transparent);
+      --exists: color-mix(in srgb, var(--vscode-textLink-foreground) 85%, transparent);
+    }
+    body {
+      margin: 0;
+      padding: 6px;
+      color: var(--fg);
+      background: var(--bg);
+      font: 12px/1.4 -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    }
+    .header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 10px;
+      gap: 8px;
+    }
+    .title {
+      font-weight: 650;
+      font-size: 14px;
+      letter-spacing: 0.2px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .actions {
+      display: flex;
+      gap: 6px;
+      align-items: center;
+      flex-shrink: 0;
+    }
+    button {
+      border: 1px solid var(--border);
+      background: transparent;
+      color: var(--fg);
+      padding: 4px 8px;
+      border-radius: 6px;
+      cursor: pointer;
+    }
+    button:hover {
+      border-color: color-mix(in srgb, var(--border) 70%, var(--accent));
+    }
+    .grid {
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      overflow: hidden;
+    }
+    .dow {
+      display: grid;
+      grid-template-columns: repeat(7, 1fr);
+      background: color-mix(in srgb, var(--bg) 80%, var(--border));
+      border-bottom: 1px solid var(--border);
+    }
+    .dow div {
+      padding: 6px 0;
+      text-align: center;
+      color: var(--muted);
+      font-weight: 600;
+      letter-spacing: 0.2px;
+      font-size: 11px;
+    }
+    .weeks {
+      display: grid;
+      grid-template-rows: repeat(6, minmax(36px, 1fr));
+    }
+    .week {
+      display: grid;
+      grid-template-columns: repeat(7, 1fr);
+      border-bottom: 1px solid var(--border);
+    }
+    .week:last-child { border-bottom: 0; }
+    .cell {
+      position: relative;
+      padding: 6px 6px 4px 6px;
+      border-right: 1px solid var(--border);
+      cursor: pointer;
+      user-select: none;
+    }
+    .cell:last-child { border-right: 0; }
+    .cell:hover { background: color-mix(in srgb, var(--bg) 70%, var(--border)); }
+    .cell.out { color: var(--muted); }
+    .cell.today { background: var(--today); }
+    .daynum {
+      font-size: 12px;
+      font-weight: 650;
+    }
+    .marker {
+      position: absolute;
+      left: 6px;
+      right: 6px;
+      bottom: 2px;
+      height: 2px;
+      border-radius: 999px;
+      background: var(--exists);
+      opacity: 0.95;
+    }
+    .cell.today .marker { background: var(--accent); }
+    .hint {
+      margin-top: 10px;
+      color: var(--muted);
+      font-size: 11px;
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <div class="title" id="title">Calendar</div>
+    <div class="actions">
+      <button id="createBtn" title="Create/Open note for date">New</button>
+      <button id="todayBtn" title="Go to today">Today</button>
+      <button id="prevBtn" title="Previous month">&#8592;</button>
+      <button id="nextBtn" title="Next month">&#8594;</button>
+    </div>
+  </div>
+
+  <div class="grid">
+    <div class="dow">
+      <div>MON</div><div>TUE</div><div>WED</div><div>THU</div><div>FRI</div><div>SAT</div><div>SUN</div>
+    </div>
+    <div id="weeks"></div>
+  </div>
+
+  <div class="hint">Click a day to open/create its note. An underline means the note exists.</div>
+
+  <script nonce="${nonce}">
+    const vscode = acquireVsCodeApi();
+    const titleEl = document.getElementById('title');
+    const weeksEl = document.getElementById('weeks');
+
+    document.getElementById('prevBtn').addEventListener('click', () => vscode.postMessage({ type: 'prevMonth' }));
+    document.getElementById('nextBtn').addEventListener('click', () => vscode.postMessage({ type: 'nextMonth' }));
+    document.getElementById('todayBtn').addEventListener('click', () => vscode.postMessage({ type: 'today' }));
+    document.getElementById('createBtn').addEventListener('click', () => vscode.postMessage({ type: 'create' }));
+
+    function render(model) {
+      titleEl.textContent = model.title;
+      weeksEl.innerHTML = '';
+
+      for (const week of model.weeks) {
+        const row = document.createElement('div');
+        row.className = 'week';
+
+        for (const cell of week) {
+          const el = document.createElement('div');
+          el.className = 'cell' + (cell.inMonth ? '' : ' out') + (cell.isToday ? ' today' : '');
+          el.title = cell.dateLabel;
+          el.addEventListener('click', () => vscode.postMessage({ type: 'openDate', dateLabel: cell.dateLabel }));
+
+          const day = document.createElement('div');
+          day.className = 'daynum';
+          day.textContent = String(cell.day);
+          el.appendChild(day);
+
+          if (cell.exists) {
+            const marker = document.createElement('div');
+            marker.className = 'marker';
+            el.appendChild(marker);
+          }
+
+          row.appendChild(el);
+        }
+
+        weeksEl.appendChild(row);
+      }
+    }
+
+    window.addEventListener('message', (event) => {
+      const msg = event.data;
+      if (msg.type === 'empty') {
+        titleEl.textContent = 'Calendar';
+        weeksEl.innerHTML = '<div style="padding:10px;color:var(--muted)">' + msg.message + '</div>';
+        return;
+      }
+      if (msg.type === 'model') {
+        render(msg.model);
+      }
+    });
+
+    // Signal to extension that the script is ready to receive messages.
+    vscode.postMessage({ type: 'ready' });
+  </script>
+</body>
+</html>`;
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Shared helpers
 // ---------------------------------------------------------------------------
 
@@ -542,6 +950,48 @@ async function autoSaveDirtyDocuments(autoSavedDocuments: Set<string>): Promise<
     }
 }
 
+function validateAndNormalizeDateInput(input: string, dateFormat: DateFormatOption): string | null {
+    const trimmed = input.trim();
+    if (dateFormat === 'yyyymmdd') {
+        if (!/^\d{8}$/.test(trimmed)) {
+            return null;
+        }
+        const d = parseDateFromFilename(trimmed, dateFormat);
+        if (isNaN(d.getTime())) {
+            return null;
+        }
+        return formatDate(d, dateFormat);
+    }
+
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
+        return null;
+    }
+    const d = parseDateFromFilename(trimmed, dateFormat);
+    if (isNaN(d.getTime())) {
+        return null;
+    }
+    return formatDate(d, dateFormat);
+}
+
+async function openOrCreateDailyNoteForDate(dateLabel: string): Promise<void> {
+    const cfg = getNotesFolder();
+    if (!cfg) {
+        vscode.window.showErrorMessage('Please configure the daily notes folder in settings.');
+        return;
+    }
+
+    await fs.promises.mkdir(cfg.folderPath, { recursive: true });
+
+    const filePath = path.join(cfg.folderPath, `${dateLabel}.md`);
+    if (!fs.existsSync(filePath)) {
+        const template = `# Daily Note - ${dateLabel}\n\n## Tasks\n\n- [ ] \n\n## Notes\n\n`;
+        await fs.promises.writeFile(filePath, template, 'utf8');
+    }
+
+    const document = await vscode.workspace.openTextDocument(filePath);
+    await vscode.window.showTextDocument(document, { preview: false });
+}
+
 // ---------------------------------------------------------------------------
 // Extension activation
 // ---------------------------------------------------------------------------
@@ -550,15 +1000,20 @@ export function activate(context: vscode.ExtensionContext) {
     const dailyNotesProvider = new DailyNotesProvider(context);
     vscode.window.registerTreeDataProvider('dailyNotes', dailyNotesProvider);
 
+    const calendarProvider = new CalendarWebviewProvider(context);
+    context.subscriptions.push(vscode.window.registerWebviewViewProvider('calendarView', calendarProvider));
+
     const todoTreeProvider = new TodoTreeProvider();
     vscode.window.registerTreeDataProvider('todoView', todoTreeProvider);
     const autoSavedDocuments = new Set<string>();
     const normalizingDocuments = new Set<string>();
+    let typingCooldownUntilMs = 0;
     let autoSaveInterval: NodeJS.Timeout | undefined;
     let previousActiveEditorUri = vscode.window.activeTextEditor?.document.uri.toString();
 
     const refreshAllViews = () => {
         dailyNotesProvider.refresh();
+        calendarProvider.refresh();
         todoTreeProvider.refresh();
     };
 
@@ -573,9 +1028,22 @@ export function activate(context: vscode.ExtensionContext) {
         }
 
         autoSaveInterval = setInterval(() => {
+            if (Date.now() < typingCooldownUntilMs) {
+                return;
+            }
             void autoSaveDirtyDocuments(autoSavedDocuments);
         }, 10000);
     };
+
+    context.subscriptions.push(
+        vscode.workspace.onDidChangeTextDocument((event) => {
+            if (event.document.isUntitled) {
+                return;
+            }
+            // Pause autosave while the user is actively typing; resume after 5s of inactivity.
+            typingCooldownUntilMs = Date.now() + 5000;
+        })
+    );
 
     context.subscriptions.push({
         dispose: () => {
@@ -600,6 +1068,10 @@ export function activate(context: vscode.ExtensionContext) {
             const currentUri = editor?.document.uri.toString();
 
             if (isAutoSaveEnabled() && previousActiveEditorUri && previousActiveEditorUri !== currentUri) {
+                if (Date.now() < typingCooldownUntilMs) {
+                    previousActiveEditorUri = currentUri;
+                    return;
+                }
                 const previousDocument = vscode.workspace.textDocuments.find(doc => doc.uri.toString() === previousActiveEditorUri);
                 if (previousDocument?.isDirty && !previousDocument.isUntitled) {
                     const uri = previousDocument.uri.toString();
@@ -671,9 +1143,33 @@ export function activate(context: vscode.ExtensionContext) {
     );
 
     context.subscriptions.push(
+        vscode.commands.registerCommand('dailyNotes.focusCalendar', async () => {
+            await vscode.commands.executeCommand('workbench.view.extension.dailyNotesContainer');
+            try { await vscode.commands.executeCommand('calendarView.focus'); } catch {}
+        })
+    );
+
+    context.subscriptions.push(
         vscode.commands.registerCommand('dailyNotes.focusTodo', async () => {
             await vscode.commands.executeCommand('workbench.view.extension.dailyNotesContainer');
             try { await vscode.commands.executeCommand('todoView.focus'); } catch {}
+        })
+    );
+
+    context.subscriptions.push(
+        vscode.commands.registerCommand('dailyNotes.calendarToday', async () => {
+            await vscode.commands.executeCommand('workbench.view.extension.dailyNotesContainer');
+            try { await vscode.commands.executeCommand('calendarView.focus'); } catch {}
+
+            const cfg = getNotesFolder();
+            if (!cfg) {
+                return;
+            }
+
+            const today = formatToday(cfg.dateFormat);
+            calendarProvider.setToToday();
+            await openOrCreateDailyNoteForDate(today);
+            refreshAllViews();
         })
     );
 
@@ -721,6 +1217,41 @@ export function activate(context: vscode.ExtensionContext) {
 
             } catch (error) {
                 console.error('Error in openNote command:', error);
+                vscode.window.showErrorMessage(`Failed to open daily note: ${error}`);
+            }
+        })
+    );
+
+    context.subscriptions.push(
+        vscode.commands.registerCommand('dailyNotes.openNoteForDate', async (dateArg?: string) => {
+            try {
+                const cfg = getNotesFolder();
+                if (!cfg) {
+                    vscode.window.showErrorMessage('Please configure the daily notes folder in settings.');
+                    return;
+                }
+
+                let dateLabel: string | null = null;
+                if (typeof dateArg === 'string' && dateArg.trim().length > 0) {
+                    dateLabel = validateAndNormalizeDateInput(dateArg, cfg.dateFormat);
+                } else {
+                    const prompt = cfg.dateFormat === 'yyyymmdd' ? 'Enter date (yyyymmdd)' : 'Enter date (yyyy-mm-dd)';
+                    const input = await vscode.window.showInputBox({ prompt, placeHolder: cfg.dateFormat === 'yyyymmdd' ? '20260214' : '2026-02-14' });
+                    if (!input) {
+                        return;
+                    }
+                    dateLabel = validateAndNormalizeDateInput(input, cfg.dateFormat);
+                }
+
+                if (!dateLabel) {
+                    vscode.window.showErrorMessage('Invalid date format.');
+                    return;
+                }
+
+                await openOrCreateDailyNoteForDate(dateLabel);
+                refreshAllViews();
+            } catch (error) {
+                console.error('Error in openNoteForDate command:', error);
                 vscode.window.showErrorMessage(`Failed to open daily note: ${error}`);
             }
         })

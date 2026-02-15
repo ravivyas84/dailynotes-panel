@@ -7,12 +7,18 @@ A VS Code extension for managing daily notes with built-in task tracking. It pro
 ## Features
 
 - **Daily Notes Panel** — Lists all `.md` files matching `yyyymmdd` or `yyyy-mm-dd` format, sorted newest-first. Today's note gets a star icon.
-- **Open Tasks Panel** — Aggregates all uncompleted tasks from every daily note, grouped by `+Project`, sorted by priority. Click a task to jump to its source note.
+- **Calendar Panel (Grid)** — Month grid calendar with:
+  - Today highlighting
+  - Underline marker when a note exists for a date
+  - Quick actions (New, Today, prev/next month)
+  - Click a day to open/create that daily note
+- **To Do Panel** — Aggregates all uncompleted tasks from every daily note, grouped by `+Project`, sorted by priority. Click a task to jump to its source note.
 - **Task Rollover** — When creating today's note, uncompleted tasks from the most recent previous note are automatically carried forward.
 - **Generate todo.md** — Scans all daily notes and writes a `todo.md` with every task grouped by project, including dates and priority.
 - **Generate Sample Todo Data** — Creates (or appends to) `2000-01-01.md` with demo tasks and sample note text for quick walkthroughs.
 - **Insert Title from Filename** — Converts the current filename into a heading at the cursor position (e.g., `my-meeting-notes` becomes `# My Meeting Notes`).
 - **Optional Autosave + Todo Processing** — When enabled, autosaves dirty files every 10 seconds and on editor switch, then refreshes todo processing for changed daily-note files.
+  - Autosave pauses while typing and resumes 5 seconds after the last change.
 
 ## Task Syntax
 
@@ -54,7 +60,12 @@ Tasks can have multiple project and context tags.
 | Command | Description |
 |---------|-------------|
 | `dailyNotes: Refresh Daily Notes` | Refresh both the daily notes and open tasks panels |
+| `dailyNotes: Focus Daily Notes Panel` | Focus the Daily Notes view |
+| `dailyNotes: Focus Calendar Panel` | Focus the Calendar view |
+| `dailyNotes: Focus To Do Panel` | Focus the To Do view |
 | `dailyNotes: Open Daily Note` | Open today's note (creates it if it doesn't exist, with task rollover) |
+| `dailyNotes: Open Daily Note For Date` | Create/open a daily note for a specific date (format matches your settings) |
+| `dailyNotes: Calendar - Go To Today` | Jump the calendar to today and open/create today's note |
 | `dailyNotes: Insert Title from Filename` | Insert the filename as a `# Heading` at the cursor |
 | `dailyNotes: Generate todo.md from All Notes` | Scan all notes and write a grouped `todo.md` |
 | `dailyNotes: Generate Sample Todo Data` | Create/append `2000-01-01.md` with sample tasks for demos, then refresh todo processing |
@@ -90,6 +101,7 @@ Tasks can have multiple project and context tags.
 4. Open `2000-01-01.md` and save once to let the extension add `id:`/`cd:`/`dd:` tokens and normalize any `due:` tokens to the end.
 5. Run `dailyNotes: Generate todo.md from All Notes` to produce a grouped `todo.md`.
 6. (Optional) Enable `dailyNotes.autoSaveEnabled` to autosave every 10 seconds and on editor switch with automatic todo refresh processing.
+7. Use the Calendar view to click dates, create notes for specific days, and jump to today.
 
 ## Development
 
@@ -145,7 +157,7 @@ This requires [vsce](https://github.com/microsoft/vscode-vsce) (`npm install -g 
 To install the packaged extension:
 
 ```bash
-code --install-extension dailynotes-panel-0.0.4.vsix
+code --install-extension dailynotes-panel-0.1.2.vsix
 ```
 
 ## Project Structure
@@ -170,17 +182,22 @@ You can raise an issue on the [GitHub repo](https://github.com/ravivyas84/dailyn
 
 ## Release Notes
 
-### 0.0.6 (Current)
+### 0.1.2 (Current)
 
-**Note:** `0.0.5` was skipped. The current release is `0.0.6`.
+**Note:** `0.0.5` was skipped.
 
-- Added `dailyNotes: Generate Sample Todo Data` command to create/append `2000-01-01.md` with demo tasks.
-- Added first-open Daily Notes panel prompt to run demo setup quickly.
-- Added empty-state action in the Daily Notes panel to generate demo data when no notes exist.
-- Added `dailyNotes.autoSaveEnabled` setting to autosave dirty files every 10 seconds and on editor switch.
-- After autosave, daily-note task changes are reprocessed and todo output is refreshed.
-- Updated documentation for new commands, settings, and demo quick start.
+- Calendar month grid (webview) with today highlighting, month navigation, and “note exists” underline marker.
+- Create/open notes for a specific date from the calendar or via command.
+- Task metadata tokens: `id:`, `cd:`, `due:`, `dd:` with auto-management on save.
+- `todo.md` now includes wiki links for note references (`[[YYYY-MM-DD]]`) and a generated-file header comment.
+- Focus commands for Daily Notes / Calendar / To Do panels.
+- Autosave now pauses while typing and resumes 5 seconds after inactivity.
 
+### 0.1.1
+
+- Improved demo onboarding and sample task generation.
+- Added autosave todo-refresh wiring and better empty states.
+r
 ### 0.0.5 (Skipped)
 
 **Note:** Version `0.0.5` was intentionally skipped.

@@ -3,7 +3,7 @@
   "displayName": "dailynotes panel",
   "icon": "resources/dailyNotes.png",
   "description": "An extension to help you with your daily notes. It has a panel which lists your daily notes in order",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "engines": {
     "vscode": "^1.95.0"
   },
@@ -27,6 +27,11 @@
           "name": "Daily Notes"
         },
         {
+          "id": "calendarView",
+          "name": "Calendar",
+          "type": "webview"
+        },
+        {
           "id": "todoView",
           "name": "To Do"
         }
@@ -42,12 +47,24 @@
         "title": "dailyNotes: Focus Daily Notes Panel"
       },
       {
+        "command": "dailyNotes.focusCalendar",
+        "title": "dailyNotes: Focus Calendar Panel"
+      },
+      {
         "command": "dailyNotes.focusTodo",
         "title": "dailyNotes: Focus To Do Panel"
       },
       {
+        "command": "dailyNotes.calendarToday",
+        "title": "dailyNotes: Calendar - Go To Today"
+      },
+      {
         "command": "dailyNotes.openNote",
         "title": "dailyNotes: Open Daily Note"
+      },
+      {
+        "command": "dailyNotes.openNoteForDate",
+        "title": "dailyNotes: Open Daily Note For Date"
       },
       {
         "command": "dailyNotes.addTitle",
@@ -90,11 +107,15 @@
   "activationEvents": [
     "onStartupFinished",
     "onView:dailyNotes",
+    "onView:calendarView",
     "onView:todoView",
     "onCommand:dailyNotes.refresh",
     "onCommand:dailyNotes.focusDailyNotes",
+    "onCommand:dailyNotes.focusCalendar",
     "onCommand:dailyNotes.focusTodo",
+    "onCommand:dailyNotes.calendarToday",
     "onCommand:dailyNotes.openNote",
+    "onCommand:dailyNotes.openNoteForDate",
     "onCommand:dailyNotes.addTitle",
     "onCommand:dailyNotes.generateTodo",
     "onCommand:dailyNotes.generateSampleTodo"
