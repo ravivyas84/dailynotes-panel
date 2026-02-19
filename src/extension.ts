@@ -73,7 +73,7 @@ function buildMetaSuffix(meta: TaskMeta): string {
     return parts.length > 0 ? ` ${parts.join(' ')}` : '';
 }
 
-function computeTaskNormalizationEdits(document: vscode.TextDocument, dateFormat: DateFormatOption): vscode.TextEdit[] {
+function computeTaskNormalizationEdits(document: vscode.TextDocument, dateFormat: DateFormatOption, defaultCd?: string): vscode.TextEdit[] {
     const edits: vscode.TextEdit[] = [];
     const existingIds = new Set<string>();
 
@@ -86,7 +86,8 @@ function computeTaskNormalizationEdits(document: vscode.TextDocument, dateFormat
         }
     }
 
-    const sourceDateFromFilename = path.basename(document.fileName, '.md');
+    // For non-daily-note files, defaultCd is passed in (today's date).
+    const sourceDateFromFilename = defaultCd ?? path.basename(document.fileName, '.md');
     const ddToday = formatDate(new Date(), dateFormat);
 
     for (let i = 0; i < document.lineCount; i++) {
@@ -993,6 +994,281 @@ async function openOrCreateDailyNoteForDate(dateLabel: string): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// Task rollover helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Inserts task lines into the ## Tasks section of a note's content.
+ * Falls back to appending a new ## Tasks section if none exists.
+ */
+function insertTaskLinesIntoContent(content: string, newLines: string[]): string {
+    const lines = content.split('\n');
+    let inTasksSection = false;
+    let lastTaskLineIndex = -1;
+    let tasksSectionHeaderIndex = -1;
+    let nextSectionIndex = -1;
+
+    for (let i = 0; i < lines.length; i++) {
+        if (/^##\s+Tasks/.test(lines[i])) {
+            inTasksSection = true;
+            tasksSectionHeaderIndex = i;
+            continue;
+        }
+        if (inTasksSection && /^##/.test(lines[i])) {
+            nextSectionIndex = i;
+            break;
+        }
+        if (inTasksSection && /^-\s+\[/.test(lines[i])) {
+            lastTaskLineIndex = i;
+        }
+    }
+
+    let insertAt: number;
+    if (lastTaskLineIndex >= 0) {
+        // After last existing task line
+        insertAt = lastTaskLineIndex + 1;
+    } else if (tasksSectionHeaderIndex >= 0) {
+        // After the ## Tasks header (empty section)
+        insertAt = tasksSectionHeaderIndex + 1;
+        // Skip blank lines immediately after the header
+        while (insertAt < lines.length && lines[insertAt].trim() === '' && (nextSectionIndex < 0 || insertAt < nextSectionIndex)) {
+            insertAt++;
+        }
+    } else {
+        // No ## Tasks section — append one
+        return content.trimEnd() + '\n\n## Tasks\n\n' + newLines.join('\n') + '\n';
+    }
+
+    const result = [...lines];
+    result.splice(insertAt, 0, ...newLines);
+    return result.join('\n');
+}
+
+/**
+ * Ensures today's daily note exists and appends the given task lines into its ## Tasks section.
+ */
+async function appendTaskLinesToTodayNote(
+    taskLines: string[],
+    cfg: { folderPath: string; dateFormat: DateFormatOption }
+): Promise<void> {
+    if (taskLines.length === 0) {
+        return;
+    }
+
+    const today = formatToday(cfg.dateFormat);
+    const todayFilePath = path.join(cfg.folderPath, `${today}.md`);
+
+    await fs.promises.mkdir(cfg.folderPath, { recursive: true });
+
+    if (!fs.existsSync(todayFilePath)) {
+        const template = `# Daily Note - ${today}\n\n## Tasks\n\n- [ ] \n\n## Notes\n\n`;
+        await fs.promises.writeFile(todayFilePath, template, 'utf8');
+    }
+
+    const content = await fs.promises.readFile(todayFilePath, 'utf8');
+    const newContent = insertTaskLinesIntoContent(content, taskLines);
+    if (newContent !== content) {
+        await fs.promises.writeFile(todayFilePath, newContent, 'utf8');
+    }
+}
+
+/**
+ * Searches all .md files in the workspace for tasks with the given ID and
+ * appends a decorator (e.g. ">[[2026-02-19]]") to each matching line.
+ * The excludeFilePath is skipped (caller handles that file separately).
+ */
+async function updateTaskDecoratorAcrossFiles(
+    taskId: string,
+    decorator: string,
+    excludeFilePath: string
+): Promise<void> {
+    const allMdUris = await vscode.workspace.findFiles('**/*.md');
+    const idPattern = new RegExp(`\\bid:${taskId}\\b`);
+
+    for (const fileUri of allMdUris) {
+        if (path.resolve(fileUri.fsPath) === path.resolve(excludeFilePath)) {
+            continue;
+        }
+
+        let content: string;
+        try {
+            content = await fs.promises.readFile(fileUri.fsPath, 'utf8');
+        } catch {
+            continue;
+        }
+
+        if (!idPattern.test(content)) {
+            continue;
+        }
+
+        const lines = content.split('\n');
+        let changed = false;
+        const newLines = lines.map(line => {
+            if (/^-\s+\[/.test(line) && idPattern.test(line) && !line.includes(decorator)) {
+                changed = true;
+                return `${line.trimEnd()} ${decorator}`;
+            }
+            return line;
+        });
+
+        if (changed) {
+            await fs.promises.writeFile(fileUri.fsPath, newLines.join('\n'), 'utf8');
+        }
+    }
+}
+
+/**
+ * Rolls over a single uncompleted task line from the active editor to today's note.
+ *
+ * - Appends ">[[today]]" to the original line (marks it as moved).
+ * - Copies the line with ">[[sourceRef]]" to today's ## Tasks section.
+ * - Propagates ">[[today]]" to any other file that has the same id:.
+ *
+ * Returns true if the task was rolled over, false if it was skipped.
+ */
+async function rolloverTaskLine(
+    lineIndex: number,
+    editor: vscode.TextEditor,
+    cfg: { folderPath: string; dateFormat: DateFormatOption }
+): Promise<boolean> {
+    const document = editor.document;
+    const line = document.lineAt(lineIndex);
+    const rawLine = line.text;
+
+    // Must be an uncompleted task line
+    const taskMatch = rawLine.match(TASK_LINE_REGEX);
+    if (!taskMatch) {
+        return false;
+    }
+    const isCompleted = taskMatch[2].toLowerCase() === 'x';
+    if (isCompleted) {
+        return false;
+    }
+
+    const today = formatToday(cfg.dateFormat);
+    const todayDecorator = `>[[${today}]]`;
+
+    // Skip tasks already marked as moved to today
+    if (rawLine.includes(todayDecorator)) {
+        return false;
+    }
+
+    // Determine the source reference: use the date part of a daily note filename,
+    // or the full basename for non-daily-note files.
+    const sourceFilename = path.basename(document.fileName, '.md');
+    const sourceDecorator = `>[[${sourceFilename}]]`;
+
+    // Extract existing task ID (if any) for cross-file propagation
+    const idMatch = rawLine.match(/\bid:([a-z0-9]+)\b/i);
+    const taskId = idMatch?.[1];
+
+    // 1. Update the original line in the source document (add ">[[today]]")
+    await editor.edit(editBuilder => {
+        editBuilder.replace(line.range, `${rawLine.trimEnd()} ${todayDecorator}`);
+    });
+    await document.save();
+
+    // 2. Copy the original (pre-decoration) line to today's note with ">[[source]]"
+    const copyLine = `${rawLine.trimEnd()} ${sourceDecorator}`;
+    await appendTaskLinesToTodayNote([copyLine], cfg);
+
+    // 3. Update all other copies that share the same id:
+    if (taskId) {
+        await updateTaskDecoratorAcrossFiles(taskId, todayDecorator, document.fileName);
+    }
+
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// Feature 2: copy new tasks from non-daily-note files to today's note on save
+// ---------------------------------------------------------------------------
+
+const COPIED_TASK_IDS_KEY = 'copiedTaskIds';
+const INITIALIZED_NONDAILY_FILES_KEY = 'initializedNonDailyFiles';
+
+function getCopiedTaskIds(context: vscode.ExtensionContext): Set<string> {
+    return new Set(context.workspaceState.get<string[]>(COPIED_TASK_IDS_KEY, []));
+}
+
+async function saveCopiedTaskIds(context: vscode.ExtensionContext, ids: Set<string>): Promise<void> {
+    await context.workspaceState.update(COPIED_TASK_IDS_KEY, [...ids]);
+}
+
+function getInitializedNonDailyFiles(context: vscode.ExtensionContext): Set<string> {
+    return new Set(context.workspaceState.get<string[]>(INITIALIZED_NONDAILY_FILES_KEY, []));
+}
+
+async function saveInitializedNonDailyFiles(context: vscode.ExtensionContext, files: Set<string>): Promise<void> {
+    await context.workspaceState.update(INITIALIZED_NONDAILY_FILES_KEY, [...files]);
+}
+
+/**
+ * Called on save of any non-daily-note .md file.
+ *
+ * On the FIRST save of a file: records all existing task IDs as "already seen"
+ * so they are NOT copied (they pre-date this feature).
+ *
+ * On SUBSEQUENT saves: any task whose ID is not yet in the copied-ids set is
+ * considered newly created. It is copied to today's note with a src:[[file]]
+ * reference, and its ID is recorded so it won't be copied again.
+ */
+async function copyNewTasksToTodayNote(
+    document: vscode.TextDocument,
+    context: vscode.ExtensionContext,
+    cfg: { folderPath: string; dateFormat: DateFormatOption }
+): Promise<void> {
+    const fileKey = path.resolve(document.fileName);
+    const copiedIds = getCopiedTaskIds(context);
+    const initializedFiles = getInitializedNonDailyFiles(context);
+
+    const sourceRef = path.basename(document.fileName, '.md');
+    const content = document.getText();
+    const tasks = parseTasksFromContent(content, sourceRef, path.basename(document.fileName));
+
+    if (!initializedFiles.has(fileKey)) {
+        // First encounter: record all current task IDs as pre-existing (don't copy them).
+        for (const task of tasks) {
+            if (task.id) {
+                copiedIds.add(task.id);
+            }
+        }
+        initializedFiles.add(fileKey);
+        await saveCopiedTaskIds(context, copiedIds);
+        await saveInitializedNonDailyFiles(context, initializedFiles);
+        return;
+    }
+
+    // Find uncompleted tasks whose IDs haven't been seen yet → newly created
+    const newTasks = tasks.filter(t => t.id && !t.completed && !copiedIds.has(t.id));
+
+    if (newTasks.length > 0) {
+        // Build task lines for today's note with src:[[sourceRef]] reference
+        const taskLines = newTasks.map(task => {
+            const checkbox = '[ ]';
+            const priority = task.priority ? `(${task.priority}) ` : '';
+            const src = ` src:[[${sourceRef}]]`;
+            // Carry over cd and due; omit id (normalization will assign a fresh one)
+            const meta: string[] = [];
+            if (task.cd) { meta.push(`cd:${task.cd}`); }
+            if (task.due) { meta.push(`due:${task.due}`); }
+            const metaSuffix = meta.length > 0 ? ` ${meta.join(' ')}` : '';
+            return `- ${checkbox} ${priority}${task.text}${src}${metaSuffix}`;
+        });
+
+        await appendTaskLinesToTodayNote(taskLines, cfg);
+    }
+
+    // Mark all task IDs in this file as seen (including newly copied ones)
+    for (const task of tasks) {
+        if (task.id) {
+            copiedIds.add(task.id);
+        }
+    }
+    await saveCopiedTaskIds(context, copiedIds);
+}
+
+// ---------------------------------------------------------------------------
 // Extension activation
 // ---------------------------------------------------------------------------
 
@@ -1090,14 +1366,18 @@ export function activate(context: vscode.ExtensionContext) {
     context.subscriptions.push(
         vscode.workspace.onDidSaveTextDocument(async (document) => {
             const cfg = getNotesFolder();
-            if (cfg && isDailyNoteDocument(document, cfg.folderPath, cfg.dateFormat)) {
-                const changed = await normalizeDailyNoteMetadata(document, cfg, normalizingDocuments);
-                if (changed) {
-                    // The save above will trigger processing again; avoid double-work here.
-                    return;
+            if (cfg) {
+                if (isDailyNoteDocument(document, cfg.folderPath, cfg.dateFormat)) {
+                    const changed = await normalizeDailyNoteMetadata(document, cfg, normalizingDocuments);
+                    if (changed) {
+                        // The save above will trigger processing again; avoid double-work here.
+                        return;
+                    }
+                    await processUpdatedTodosFromDocument(document, todoTreeProvider);
+                } else if (document.languageId === 'markdown' && !normalizingDocuments.has(document.uri.toString())) {
+                    // Feature 2: copy newly created tasks from any non-daily-note .md file to today's note.
+                    await copyNewTasksToTodayNote(document, context, cfg);
                 }
-
-                await processUpdatedTodosFromDocument(document, todoTreeProvider);
             }
 
             const uri = document.uri.toString();
@@ -1112,12 +1392,21 @@ export function activate(context: vscode.ExtensionContext) {
 
     context.subscriptions.push(
         vscode.workspace.onWillSaveTextDocument((event) => {
-            const cfg = getNotesFolder();
-            if (!cfg || !isDailyNoteDocument(event.document, cfg.folderPath, cfg.dateFormat)) {
+            if (event.document.languageId !== 'markdown') {
                 return;
             }
 
-            const edits = computeTaskNormalizationEdits(event.document, cfg.dateFormat);
+            const cfg = getNotesFolder();
+            if (!cfg) {
+                return;
+            }
+
+            // For non-daily-note .md files use today as the default cd so new tasks
+            // get a sensible creation date rather than the (non-date) filename.
+            const isDailyNote = isDailyNoteDocument(event.document, cfg.folderPath, cfg.dateFormat);
+            const defaultCd = isDailyNote ? undefined : formatToday(cfg.dateFormat);
+
+            const edits = computeTaskNormalizationEdits(event.document, cfg.dateFormat, defaultCd);
             if (edits.length === 0) {
                 return;
             }
@@ -1303,6 +1592,114 @@ export function activate(context: vscode.ExtensionContext) {
             } catch (error) {
                 console.error('Error in generateTodo command:', error);
                 vscode.window.showErrorMessage(`Failed to generate todo.md: ${error}`);
+            }
+        })
+    );
+
+    // Roll over all uncompleted tasks in the active file to today's note
+    context.subscriptions.push(
+        vscode.commands.registerCommand('dailyNotes.rolloverAllTasks', async () => {
+            try {
+                const editor = vscode.window.activeTextEditor;
+                if (!editor) {
+                    vscode.window.showErrorMessage('No active editor.');
+                    return;
+                }
+
+                const cfg = getNotesFolder();
+                if (!cfg) {
+                    vscode.window.showErrorMessage('Please configure the daily notes folder in settings.');
+                    return;
+                }
+
+                const document = editor.document;
+                const today = formatToday(cfg.dateFormat);
+                const todayFile = path.join(cfg.folderPath, `${today}.md`);
+
+                if (path.resolve(document.fileName) === path.resolve(todayFile)) {
+                    vscode.window.showWarningMessage("Can't roll over tasks from today's note into itself.");
+                    return;
+                }
+
+                let rolledOver = 0;
+                // Iterate lines from bottom to top so line indices stay valid after edits
+                for (let i = document.lineCount - 1; i >= 0; i--) {
+                    const line = document.lineAt(i).text;
+                    const m = line.match(TASK_LINE_REGEX);
+                    if (!m || m[2].toLowerCase() === 'x') {
+                        continue;
+                    }
+                    const todayDecorator = `>[[${today}]]`;
+                    if (line.includes(todayDecorator)) {
+                        continue;
+                    }
+                    const ok = await rolloverTaskLine(i, editor, cfg);
+                    if (ok) {
+                        rolledOver++;
+                    }
+                }
+
+                if (rolledOver === 0) {
+                    vscode.window.showInformationMessage('No uncompleted tasks to roll over.');
+                } else {
+                    refreshAllViews();
+                    vscode.window.showInformationMessage(`Rolled over ${rolledOver} task(s) to ${today}.`);
+                }
+            } catch (error) {
+                console.error('Error in rolloverAllTasks command:', error);
+                vscode.window.showErrorMessage(`Failed to roll over tasks: ${error}`);
+            }
+        })
+    );
+
+    // Roll over the single task at the cursor to today's note
+    context.subscriptions.push(
+        vscode.commands.registerCommand('dailyNotes.rolloverTaskAtCursor', async () => {
+            try {
+                const editor = vscode.window.activeTextEditor;
+                if (!editor) {
+                    vscode.window.showErrorMessage('No active editor.');
+                    return;
+                }
+
+                const cfg = getNotesFolder();
+                if (!cfg) {
+                    vscode.window.showErrorMessage('Please configure the daily notes folder in settings.');
+                    return;
+                }
+
+                const document = editor.document;
+                const today = formatToday(cfg.dateFormat);
+                const todayFile = path.join(cfg.folderPath, `${today}.md`);
+
+                if (path.resolve(document.fileName) === path.resolve(todayFile)) {
+                    vscode.window.showWarningMessage("Can't roll over tasks from today's note into itself.");
+                    return;
+                }
+
+                const lineIndex = editor.selection.active.line;
+                const line = document.lineAt(lineIndex).text;
+                const m = line.match(TASK_LINE_REGEX);
+
+                if (!m) {
+                    vscode.window.showWarningMessage('No task found on the current line.');
+                    return;
+                }
+                if (m[2].toLowerCase() === 'x') {
+                    vscode.window.showWarningMessage('Task is already completed — nothing to roll over.');
+                    return;
+                }
+
+                const ok = await rolloverTaskLine(lineIndex, editor, cfg);
+                if (ok) {
+                    refreshAllViews();
+                    vscode.window.showInformationMessage(`Task rolled over to ${today}.`);
+                } else {
+                    vscode.window.showInformationMessage('Task was already rolled over to today.');
+                }
+            } catch (error) {
+                console.error('Error in rolloverTaskAtCursor command:', error);
+                vscode.window.showErrorMessage(`Failed to roll over task: ${error}`);
             }
         })
     );
