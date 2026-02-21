@@ -32,14 +32,27 @@ jobs:
       - name: Run tests
         run: npm test
 
+      - name: Bump version if unchanged from main
+        run: |
+          git show HEAD~1:package.json > /tmp/prev_package.json 2>/dev/null || echo '{"version":"0.0.0"}' > /tmp/prev_package.json
+          CURRENT=$(node -p "require('./package.json').version")
+          PREV=$(node -p "require('/tmp/prev_package.json').version")
+          if [ "$CURRENT" = "$PREV" ]; then
+            echo "Version $CURRENT is unchanged from previous commit, bumping patch version..."
+            npm version patch --no-git-tag-version
+            echo "New version: $(node -p "require('./package.json').version")"
+          else
+            echo "Version changed from $PREV to $CURRENT, no auto-bump needed."
+          fi
+
       - name: Package extension
         run: npx @vscode/vsce package --out releases/
 
-      - name: Commit VSIX to releases/
+      - name: Commit release artifacts
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add releases/
+          git add releases/ package.json package-lock.json
           git diff --cached --quiet && echo "No changes to commit" && exit 0
           git commit -m "chore: release $(ls releases/*.vsix | xargs -I{} basename {}) [skip ci]"
           git push
