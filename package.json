@@ -77,6 +77,14 @@
       {
         "command": "dailyNotes.generateSampleTodo",
         "title": "dailyNotes: Generate Sample Todo Data"
+      },
+      {
+        "command": "dailyNotes.rolloverAllTasks",
+        "title": "dailyNotes: Roll Over All Tasks in File to Today"
+      },
+      {
+        "command": "dailyNotes.rolloverTaskAtCursor",
+        "title": "dailyNotes: Roll Over Task at Cursor to Today"
       }
     ],
     "configuration": {
@@ -118,7 +126,9 @@
     "onCommand:dailyNotes.openNoteForDate",
     "onCommand:dailyNotes.addTitle",
     "onCommand:dailyNotes.generateTodo",
-    "onCommand:dailyNotes.generateSampleTodo"
+    "onCommand:dailyNotes.generateSampleTodo",
+    "onCommand:dailyNotes.rolloverAllTasks",
+    "onCommand:dailyNotes.rolloverTaskAtCursor"
   ],
   "main": "./out/extension.js",
   "scripts": {
