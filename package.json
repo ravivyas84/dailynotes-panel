@@ -3,7 +3,7 @@
   "displayName": "dailynotes panel",
   "icon": "resources/dailyNotes.png",
   "description": "An extension to help you with your daily notes. It has a panel which lists your daily notes in order",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "engines": {
     "vscode": "^1.95.0"
   },
