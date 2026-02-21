@@ -1120,9 +1120,11 @@ async function updateTaskDecoratorAcrossFiles(
 /**
  * Rolls over a single uncompleted task line from the active editor to today's note.
  *
- * - Appends ">[[today]]" to the original line (marks it as moved).
- * - Copies the line with ">[[sourceRef]]" to today's ## Tasks section.
- * - Propagates ">[[today]]" to any other file that has the same id:.
+ * - Appends "~[[today]]" to the original line (marks it as moved to today's note).
+ * - Copies the line with ">[[sourceRef]]" to today's ## Tasks section (marks origin).
+ * - Propagates "~[[today]]" to any other file that has the same id:.
+ *
+ * Convention: ~[[X]] = "copied/moved TO X"; >[[X]] = "originated FROM X".
  *
  * Returns true if the task was rolled over, false if it was skipped.
  */
@@ -1146,7 +1148,7 @@ async function rolloverTaskLine(
     }
 
     const today = formatToday(cfg.dateFormat);
-    const todayDecorator = `>[[${today}]]`;
+    const todayDecorator = `~[[${today}]]`;
 
     // Skip tasks already marked as moved to today
     if (rawLine.includes(todayDecorator)) {
@@ -1162,7 +1164,7 @@ async function rolloverTaskLine(
     const idMatch = rawLine.match(/\bid:([a-z0-9]+)\b/i);
     const taskId = idMatch?.[1];
 
-    // 1. Update the original line in the source document (add ">[[today]]")
+    // 1. Update the original line in the source document (add "~[[today]]")
     await editor.edit(editBuilder => {
         editBuilder.replace(line.range, `${rawLine.trimEnd()} ${todayDecorator}`);
     });
@@ -1210,13 +1212,17 @@ async function saveInitializedNonDailyFiles(context: vscode.ExtensionContext, fi
  * so they are NOT copied (they pre-date this feature).
  *
  * On SUBSEQUENT saves: any task whose ID is not yet in the copied-ids set is
- * considered newly created. It is copied to today's note with a src:[[file]]
- * reference, and its ID is recorded so it won't be copied again.
+ * considered newly created. It is:
+ *   - Copied to today's note with ">[[sourceFile]]" (originated from sourceFile).
+ *   - Marked in the source file with "~[[today]]" (copied to today's note).
+ *
+ * Convention: ~[[X]] = "copied/moved TO X"; >[[X]] = "originated FROM X".
  */
 async function copyNewTasksToTodayNote(
     document: vscode.TextDocument,
     context: vscode.ExtensionContext,
-    cfg: { folderPath: string; dateFormat: DateFormatOption }
+    cfg: { folderPath: string; dateFormat: DateFormatOption },
+    normalizingDocuments: Set<string>
 ): Promise<void> {
     const fileKey = path.resolve(document.fileName);
     const copiedIds = getCopiedTaskIds(context);
@@ -1243,20 +1249,47 @@ async function copyNewTasksToTodayNote(
     const newTasks = tasks.filter(t => t.id && !t.completed && !copiedIds.has(t.id));
 
     if (newTasks.length > 0) {
-        // Build task lines for today's note with src:[[sourceRef]] reference
+        const today = formatToday(cfg.dateFormat);
+
+        // Build task lines for today's note: ">[[sourceRef]]" marks the origin.
         const taskLines = newTasks.map(task => {
             const checkbox = '[ ]';
             const priority = task.priority ? `(${task.priority}) ` : '';
-            const src = ` src:[[${sourceRef}]]`;
+            const originMarker = ` >[[${sourceRef}]]`;
             // Carry over cd and due; omit id (normalization will assign a fresh one)
             const meta: string[] = [];
             if (task.cd) { meta.push(`cd:${task.cd}`); }
             if (task.due) { meta.push(`due:${task.due}`); }
             const metaSuffix = meta.length > 0 ? ` ${meta.join(' ')}` : '';
-            return `- ${checkbox} ${priority}${task.text}${src}${metaSuffix}`;
+            return `- ${checkbox} ${priority}${task.text}${originMarker}${metaSuffix}`;
         });
 
         await appendTaskLinesToTodayNote(taskLines, cfg);
+
+        // Write "~[[today]]" back to each copied task in the source file so the
+        // user can see at a glance that it was synced to today's note.
+        const copyMarker = `~[[${today}]]`;
+        const uri = document.uri.toString();
+        const edit = new vscode.WorkspaceEdit();
+
+        for (const task of newTasks) {
+            for (let i = 0; i < document.lineCount; i++) {
+                const ln = document.lineAt(i);
+                if (task.id && ln.text.includes(`id:${task.id}`)) {
+                    edit.replace(document.uri, ln.range, `${ln.text.trimEnd()} ${copyMarker}`);
+                    break;
+                }
+            }
+        }
+
+        // Guard against the triggered save re-running this function.
+        normalizingDocuments.add(uri);
+        try {
+            await vscode.workspace.applyEdit(edit);
+            await document.save();
+        } finally {
+            normalizingDocuments.delete(uri);
+        }
     }
 
     // Mark all task IDs in this file as seen (including newly copied ones)
@@ -1376,7 +1409,7 @@ export function activate(context: vscode.ExtensionContext) {
                     await processUpdatedTodosFromDocument(document, todoTreeProvider);
                 } else if (document.languageId === 'markdown' && !normalizingDocuments.has(document.uri.toString())) {
                     // Feature 2: copy newly created tasks from any non-daily-note .md file to today's note.
-                    await copyNewTasksToTodayNote(document, context, cfg);
+                    await copyNewTasksToTodayNote(document, context, cfg, normalizingDocuments);
                 }
             }
 
@@ -1629,7 +1662,7 @@ export function activate(context: vscode.ExtensionContext) {
                     if (!m || m[2].toLowerCase() === 'x') {
                         continue;
                     }
-                    const todayDecorator = `>[[${today}]]`;
+                    const todayDecorator = `~[[${today}]]`;
                     if (line.includes(todayDecorator)) {
                         continue;
                     }
