@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
 import * as crypto from 'crypto';
-import { DailyNote, DateFormatOption, getDateRegex, isToday, formatDate, formatToday, parseDateFromFilename, filenameToTitle, processNoteFiles } from './utils';
+import { DailyNote, DateFormatOption, getDateRegex, isToday, formatDate, formatToday, parseDateFromFilename, filenameToTitle, processNoteFiles, getWeekFilename, getWeekNumber, getWeekDateRange } from './utils';
 import { Task, parseTasksFromContent, getUncompletedTasks, groupTasksByProject, sortTasksByPriority, formatTodoMd, formatTaskLine, buildRolloverSection } from './taskParser';
 
 const SAMPLE_NOTE_FILENAME = '2000-01-01.md';
@@ -344,12 +344,18 @@ type CalendarCell = {
     isToday: boolean;
 };
 
+type CalendarWeek = {
+    weekNumber: number;
+    weekFilename: string;
+    cells: CalendarCell[];
+};
+
 type CalendarModel = {
     title: string;
     year: number;
     monthIndex: number;
     dateFormat: DateFormatOption;
-    weeks: CalendarCell[][];
+    weeks: CalendarWeek[];
 };
 
 class CalendarWebviewProvider implements vscode.WebviewViewProvider {
@@ -425,6 +431,13 @@ class CalendarWebviewProvider implements vscode.WebviewViewProvider {
                 await openOrCreateDailyNoteForDate(message.dateLabel);
                 return;
             }
+            if (type === 'openWeek' && typeof message?.weekFilename === 'string') {
+                const cfg = getNotesFolder();
+                if (cfg) {
+                    await openWeeklyFile(message.weekFilename, cfg);
+                }
+                return;
+            }
         }, undefined, this.context.subscriptions);
 
         webviewView.onDidChangeVisibility(() => {
@@ -472,10 +485,14 @@ class CalendarWebviewProvider implements vscode.WebviewViewProvider {
         const jsDay = firstOfMonth.getDay(); // 0=Sun..6=Sat
         const firstDow = (jsDay + 6) % 7;
 
-        const weeks: CalendarCell[][] = [];
+        const weeks: CalendarWeek[] = [];
         let week: CalendarCell[] = [];
+        let weekStartDate: Date | null = null;
 
         const pushCell = (date: Date, inMonth: boolean) => {
+            if (week.length === 0) {
+                weekStartDate = date;
+            }
             const dateLabel = formatDate(date, cfg.dateFormat);
             week.push({
                 day: date.getDate(),
@@ -485,8 +502,11 @@ class CalendarWebviewProvider implements vscode.WebviewViewProvider {
                 isToday: isToday(date),
             });
             if (week.length === 7) {
-                weeks.push(week);
+                const wNum = getWeekNumber(weekStartDate!);
+                const wFilename = getWeekFilename(weekStartDate!);
+                weeks.push({ weekNumber: wNum, weekFilename: wFilename, cells: week });
                 week = [];
+                weekStartDate = null;
             }
         };
 
@@ -603,7 +623,7 @@ class CalendarWebviewProvider implements vscode.WebviewViewProvider {
     }
     .dow {
       display: grid;
-      grid-template-columns: repeat(7, 1fr);
+      grid-template-columns: 28px repeat(7, 1fr);
       background: color-mix(in srgb, var(--bg) 80%, var(--border));
       border-bottom: 1px solid var(--border);
     }
@@ -621,10 +641,24 @@ class CalendarWebviewProvider implements vscode.WebviewViewProvider {
     }
     .week {
       display: grid;
-      grid-template-columns: repeat(7, 1fr);
+      grid-template-columns: 28px repeat(7, 1fr);
       border-bottom: 1px solid var(--border);
     }
     .week:last-child { border-bottom: 0; }
+    .wknum {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 9px;
+      font-weight: 600;
+      color: var(--accent);
+      border-right: 1px solid var(--border);
+      cursor: pointer;
+      user-select: none;
+      padding: 0 2px;
+      opacity: 0.8;
+    }
+    .wknum:hover { opacity: 1; text-decoration: underline; }
     .cell {
       position: relative;
       padding: 6px 6px 4px 6px;
@@ -671,12 +705,12 @@ class CalendarWebviewProvider implements vscode.WebviewViewProvider {
 
   <div class="grid">
     <div class="dow">
-      <div>MON</div><div>TUE</div><div>WED</div><div>THU</div><div>FRI</div><div>SAT</div><div>SUN</div>
+      <div>WK</div><div>MON</div><div>TUE</div><div>WED</div><div>THU</div><div>FRI</div><div>SAT</div><div>SUN</div>
     </div>
     <div id="weeks"></div>
   </div>
 
-  <div class="hint">Click a day to open/create its note. An underline means the note exists.</div>
+  <div class="hint">Click a day to open/create its note · Click a week number for the weekly summary.</div>
 
   <script nonce="${nonce}">
     const vscode = acquireVsCodeApi();
@@ -696,7 +730,15 @@ class CalendarWebviewProvider implements vscode.WebviewViewProvider {
         const row = document.createElement('div');
         row.className = 'week';
 
-        for (const cell of week) {
+        // Week number cell
+        const wkEl = document.createElement('div');
+        wkEl.className = 'wknum';
+        wkEl.textContent = String(week.weekNumber);
+        wkEl.title = 'Open weekly summary: ' + week.weekFilename;
+        wkEl.addEventListener('click', () => vscode.postMessage({ type: 'openWeek', weekFilename: week.weekFilename }));
+        row.appendChild(wkEl);
+
+        for (const cell of week.cells) {
           const el = document.createElement('div');
           el.className = 'cell' + (cell.inMonth ? '' : ' out') + (cell.isToday ? ' today' : '');
           el.title = cell.dateLabel;
@@ -882,6 +924,7 @@ async function processUpdatedTodosFromDocument(document: vscode.TextDocument, to
     parseTasksFromContent(document.getText(), sourceDate, sourceFile);
 
     await writeTodoFile(false);
+    await writeAllWeeklyFiles(cfg);
     todoTreeProvider.refresh();
 }
 
@@ -1183,6 +1226,192 @@ async function rolloverTaskLine(
 }
 
 // ---------------------------------------------------------------------------
+// Feature: copy tasks with due dates to their due-date daily note files
+// ---------------------------------------------------------------------------
+
+/**
+ * For each task in the given daily note that has a due: date, copies the task
+ * to the corresponding due-date file. If that file doesn't exist it is created
+ * silently (not opened). Tasks already present (matched by id:) are skipped.
+ */
+async function copyTasksToDueDateFiles(
+    document: vscode.TextDocument,
+    cfg: { folderPath: string; dateFormat: DateFormatOption }
+): Promise<void> {
+    const sourceFile = path.basename(document.fileName);
+    const sourceDate = sourceFile.replace('.md', '');
+    const tasks = parseTasksFromContent(document.getText(), sourceDate, sourceFile);
+
+    for (const task of tasks) {
+        if (!task.due || !task.id) {
+            continue;
+        }
+
+        let dueDate: Date;
+        try {
+            dueDate = parseDateFromFilename(task.due, cfg.dateFormat);
+        } catch {
+            continue;
+        }
+        if (isNaN(dueDate.getTime())) {
+            continue;
+        }
+
+        const dueDateLabel = formatDate(dueDate, cfg.dateFormat);
+
+        // Skip if the due date is the same as the source file date.
+        if (dueDateLabel === sourceDate) {
+            continue;
+        }
+
+        const dueFilePath = path.join(cfg.folderPath, `${dueDateLabel}.md`);
+
+        // Create the due-date file if it doesn't exist (don't open it).
+        if (!fs.existsSync(dueFilePath)) {
+            const template = `# Daily Note - ${dueDateLabel}\n\n## Tasks\n\n- [ ] \n\n## Notes\n\n`;
+            await fs.promises.writeFile(dueFilePath, template, 'utf8');
+        }
+
+        // Check if this task (by id:) is already present in the target file.
+        let targetContent: string;
+        try {
+            targetContent = await fs.promises.readFile(dueFilePath, 'utf8');
+        } catch {
+            continue;
+        }
+        if (targetContent.includes(`id:${task.id}`)) {
+            continue;
+        }
+
+        // Build the task line with the original id so duplicate detection works on re-runs.
+        const checkbox = task.completed ? '[x]' : '[ ]';
+        const priority = task.priority ? `(${task.priority}) ` : '';
+        const metaParts: string[] = [`id:${task.id}`];
+        if (task.cd) { metaParts.push(`cd:${task.cd}`); }
+        if (task.due) { metaParts.push(`due:${task.due}`); }
+        const taskLine = `- ${checkbox} ${priority}${task.text} >[[${sourceDate}]] ${metaParts.join(' ')}`;
+
+        const newContent = insertTaskLinesIntoContent(targetContent, [taskLine]);
+        if (newContent !== targetContent) {
+            await fs.promises.writeFile(dueFilePath, newContent, 'utf8');
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Feature: weekly summary files
+// ---------------------------------------------------------------------------
+
+/**
+ * Generates (or regenerates) weekly summary files for every ISO week that has
+ * at least one daily note or a task due that week. Files are named
+ * week-YYYY-WNN.md (e.g. week-2026-W12.md) and written to the notes folder.
+ */
+async function writeAllWeeklyFiles(cfg: { folderPath: string; dateFormat: DateFormatOption }): Promise<void> {
+    const allTasks = await scanAllTasks();
+
+    type WeekData = {
+        weekNumber: number;
+        startDate: Date;
+        endDate: Date;
+        tasks: Task[];
+        dueTasks: Task[];
+    };
+
+    const weekData = new Map<string, WeekData>();
+
+    const ensureWeek = (date: Date): string => {
+        const wf = getWeekFilename(date);
+        if (!weekData.has(wf)) {
+            const { start, end } = getWeekDateRange(date);
+            weekData.set(wf, {
+                weekNumber: getWeekNumber(date),
+                startDate: start,
+                endDate: end,
+                tasks: [],
+                dueTasks: [],
+            });
+        }
+        return wf;
+    };
+
+    for (const task of allTasks) {
+        // Add task to its source week.
+        try {
+            const taskDate = parseDateFromFilename(task.sourceDate, cfg.dateFormat);
+            if (!isNaN(taskDate.getTime())) {
+                const wf = ensureWeek(taskDate);
+                weekData.get(wf)!.tasks.push(task);
+            }
+        } catch { /* skip */ }
+
+        // Add uncompleted tasks to the "Due This Week" section of the due week,
+        // but only when the task originates from a different week.
+        if (task.due && !task.completed) {
+            try {
+                const dueDate = parseDateFromFilename(task.due, cfg.dateFormat);
+                if (!isNaN(dueDate.getTime())) {
+                    const dueWf = ensureWeek(dueDate);
+                    let sourceWf = '';
+                    try {
+                        const srcDate = parseDateFromFilename(task.sourceDate, cfg.dateFormat);
+                        if (!isNaN(srcDate.getTime())) {
+                            sourceWf = getWeekFilename(srcDate);
+                        }
+                    } catch { /* ignore */ }
+                    if (dueWf !== sourceWf) {
+                        weekData.get(dueWf)!.dueTasks.push(task);
+                    }
+                }
+            } catch { /* skip */ }
+        }
+    }
+
+    for (const [weekFilename, data] of weekData) {
+        const startLabel = formatDate(data.startDate, cfg.dateFormat);
+        const endLabel = formatDate(data.endDate, cfg.dateFormat);
+
+        let content = `<!-- GENERATED FILE: ${weekFilename}.md — do not edit manually -->\n`;
+        content += `# Week ${data.weekNumber} — ${startLabel} to ${endLabel}\n\n`;
+        content += `## Tasks\n\n`;
+
+        if (data.tasks.length === 0) {
+            content += `_No tasks this week._\n`;
+        } else {
+            for (const task of sortTasksByPriority(data.tasks)) {
+                content += formatTaskLine(task, true) + '\n';
+            }
+        }
+
+        if (data.dueTasks.length > 0) {
+            content += `\n## Due This Week\n\n`;
+            for (const task of sortTasksByPriority(data.dueTasks)) {
+                content += formatTaskLine(task, true) + '\n';
+            }
+        }
+
+        const filePath = path.join(cfg.folderPath, `${weekFilename}.md`);
+        await fs.promises.writeFile(filePath, content, 'utf8');
+    }
+}
+
+/**
+ * Opens the given weekly file, regenerating it first if it doesn't exist.
+ */
+async function openWeeklyFile(
+    weekFilename: string,
+    cfg: { folderPath: string; dateFormat: DateFormatOption }
+): Promise<void> {
+    await fs.promises.mkdir(cfg.folderPath, { recursive: true });
+    await writeAllWeeklyFiles(cfg);
+    const filePath = path.join(cfg.folderPath, `${weekFilename}.md`);
+    if (fs.existsSync(filePath)) {
+        const document = await vscode.workspace.openTextDocument(filePath);
+        await vscode.window.showTextDocument(document, { preview: false });
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Feature 2: copy new tasks from non-daily-note files to today's note on save
 // ---------------------------------------------------------------------------
 
@@ -1407,6 +1636,7 @@ export function activate(context: vscode.ExtensionContext) {
                         return;
                     }
                     await processUpdatedTodosFromDocument(document, todoTreeProvider);
+                    await copyTasksToDueDateFiles(document, cfg);
                 } else if (document.languageId === 'markdown' && !normalizingDocuments.has(document.uri.toString())) {
                     // Feature 2: copy newly created tasks from any non-daily-note .md file to today's note.
                     await copyNewTasksToTodayNote(document, context, cfg, normalizingDocuments);
